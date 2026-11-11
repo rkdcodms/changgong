@@ -63,9 +63,9 @@ constexpr int32_t PAIR_6_MAX = 3329;
 // Original limits for the OTHER joints are preserved.
 //                         ID1  ID2          ID3   ID4   ID5  ID6
 constexpr int32_t JOINT_MIN[ARM_MOTOR_COUNT] =
-    {0, PAIR_2_MIN, 1325, 1700, 0, PAIR_6_MIN};
+    {0, PAIR_2_MIN, 1325, 1024, -4095, PAIR_6_MIN};
 constexpr int32_t JOINT_MAX[ARM_MOTOR_COUNT] =
-    {4095, PAIR_2_MAX, 3405, 3010, 4095, PAIR_6_MAX};
+    {4095, PAIR_2_MAX, 3405, 3072, 8190, PAIR_6_MAX};
 constexpr uint16_t ARM_PROFILE_VELOCITY = 20;
 constexpr uint16_t ARM_PROFILE_ACCELERATION = 10;
 constexpr uint32_t ARM_CONTROL_MS = 20;
@@ -105,7 +105,7 @@ constexpr uint32_t CONFIG_TIMEOUT_MS = 100;
 
 constexpr uint16_t GRIPPER_GOAL_CURRENT = 700; // original XC330 RAW values
 constexpr uint16_t GRIP_HOME_CURRENT = 500;
-constexpr int32_t GRIP_SPAN = 1010;
+constexpr int32_t GRIP_SPAN = 3725;
 constexpr int GRIP_CLOSE_DIR = +1;
 constexpr int LEADER_GRIP_SIGN = +1;
 constexpr int32_t GRIP_CLOSE_MARGIN = 0;
@@ -1113,9 +1113,7 @@ int32_t gripperGoal(int32_t delta) {
     if (hi < leaderGripOpen) leaderGripOpen = hi;
   }
   int32_t span = leaderGripClosed - leaderGripOpen;
-  float fraction = span > 30 ? float(leaderGripClosed - c) / span : 0.0f;
-  fraction = constrain(fraction, 0.0f, 1.0f);
-  int32_t open = (int32_t)(fraction * (GRIP_SPAN - GRIP_OPEN_MARGIN - GRIP_CLOSE_MARGIN));
+int32_t open = span > 30 ? clamp32(leaderGripClosed - c, 0, GRIP_SPAN - GRIP_OPEN_MARGIN - GRIP_CLOSE_MARGIN) : 0;
   return gripClosedPos - GRIP_CLOSE_DIR * (GRIP_CLOSE_MARGIN + open);
 }
 

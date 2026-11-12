@@ -71,3 +71,9 @@ arduino-cli compile --fqbn arduino:avr:mega arduino/line_tracer_ver3_updated
 4. **팀원이 재현할 자료** — Jetson 실행 파일과 환경·모델 파일 위치, 확인된 배선표, 테스트 조건과 결과를 함께 저장한다. 각자의 최신 실행 코드를 문서 속 예제와 구분한다.
 
 현재 독립 주행판의 5초 재출발 동작은 유지하고, 카메라·미션 통합 변경은 별도 브랜치에서 검토한다.
+
+## 경기 통합판 (작업 중)
+
+- AutoRobot 경기 프로그램과 MS1 Mega 펌웨어: [autorobot/MISSION.md](autorobot/MISSION.md) — 시련 순서 입력, 현재 목표 석상만 정지, GO 전까지 정지 유지, 선원·제단·이동 상태 분리, 고장 복구, 현장 시험 기록 도구.
+- 수동 로봇 코드 검토와 실물 확인 항목: [docs/software/MANUAL_ROBOT_REVIEW.md](docs/software/MANUAL_ROBOT_REVIEW.md).
+- 위 두 자료의 결과는 PC 모의 시험까지이며 실제 장비 검증 결과가 아니다.

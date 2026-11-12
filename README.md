@@ -62,3 +62,8 @@ arduino-cli compile --fqbn arduino:avr:mega arduino/line_tracer_ver3_updated
 4. **팀원이 재현할 자료** — Jetson 실행 파일과 환경·모델 파일 위치, 확인된 배선표, 테스트 조건과 결과를 함께 저장한다. 각자의 최신 실행 코드를 문서 속 예제와 구분한다.
 
 현재 독립 주행판의 5초 재출발 동작은 유지하고, 카메라·미션 통합 변경은 별도 브랜치에서 검토한다.
+
+
+## Eval2 · ROBOCON 최신 자료 (2026-11-12)
+
+[최신 룰북·룰 개정·DJI 매뉴얼·Classum 답변·소프트웨어 인계](docs/eval2-robocon-20261112/README.md)를 먼저 확인한다. 룰북은 개인 연락처를 가린 공개용 사본이며, 확인 이후 공지가 바뀌면 다시 대조한다.

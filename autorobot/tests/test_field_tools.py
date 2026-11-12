@@ -70,3 +70,26 @@ class SensorTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+import score  # noqa: E402
+
+
+class ScoreTests(unittest.TestCase):
+    def test_rulebook_examples(self):
+        # p.33: third trial stop = 15; p.33: third trial with 2 crews = 4
+        r = score.score([0, 0, 2], ['none', 'none', 'ok'], [0, 0, 1], [0, 0, 0])
+        self.assertEqual((r['stop'], r['crew']), (15, 4))
+        # p.34: Odysseus + bow, first = 2 x (10 + 5) = 30
+        self.assertEqual(score.score([0] * 3, ['none'] * 3, [0] * 3, [0] * 3, odysseus=True, bow=True,
+                                     first=True)['ithaca'], 30)
+        # wrong position stop = 5 only; lap cap 5 x (5 + trials)
+        r = score.score([1, 1, 1], ['wrong', 'ok', 'ok'], [1, 1, 1], [1, 1, 1], laps=20, resets=1)
+        self.assertEqual(r['stop'], 5 + 10 + 15)
+        self.assertEqual(r['laps'], 40)
+        self.assertEqual(r['altar'], 2 + 4 + 6)
+        self.assertEqual(r['penalty'], -5)
+        with self.assertRaises(ValueError):
+            score.score([1, 0, 0], ['ok'] * 3, [0, 0, 0], [1, 0, 0])
+        with self.assertRaises(ValueError):
+            score.score([0] * 3, ['ok'] * 3, [0] * 3, [0] * 3, pin=True)

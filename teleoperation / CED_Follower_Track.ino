@@ -24,7 +24,7 @@
 #define BLT_SERIAL Serial2
 #define DEBUG_SERIAL Serial
 #define DEBUG 1
-#define FIRMWARE_LABEL "FOLLOWER_TRACK_20261112"
+#define FIRMWARE_LABEL "FOLLOWER_GRIP_TRACK_20261112"
 
 Dynamixel2Arduino dxl(DXL_SERIAL, -1);
 using namespace ControlTableItem;
@@ -41,6 +41,7 @@ constexpr uint8_t ARM_IDS[ARM_MOTOR_COUNT] = {1, 2, 3, 4, 5, 6};
 constexpr uint8_t PAIR_INDEX_2 = 1;
 constexpr uint8_t PAIR_INDEX_6 = 5;
 constexpr uint8_t GRIP_INDEX = 4;
+constexpr int32_t GRIP_NO_SAMPLE = INT32_MIN; // fifth field only: keep the last gripper target
 constexpr uint8_t GRIPPER_IDS[] = {5};
 constexpr uint8_t GRIPPER_NUM = sizeof(GRIPPER_IDS) / sizeof(GRIPPER_IDS[0]);
 constexpr uint16_t XL430_MODEL_NUMBER = 1060; // XL430-W250
@@ -105,11 +106,11 @@ constexpr uint32_t CONFIG_TIMEOUT_MS = 100;
 
 constexpr uint16_t GRIPPER_GOAL_CURRENT = 700; // original XC330 RAW values
 constexpr uint16_t GRIP_HOME_CURRENT = 500;
-constexpr int32_t GRIP_SPAN = 3725;
+constexpr int32_t GRIP_SPAN = 3704;
 constexpr int GRIP_CLOSE_DIR = +1;
 constexpr int LEADER_GRIP_SIGN = +1;
 constexpr int32_t GRIP_CLOSE_MARGIN = 0;
-constexpr int32_t GRIP_OPEN_MARGIN = 30;
+constexpr int32_t GRIP_OPEN_MARGIN = 20;
 
 constexpr uint8_t PPM_PIN = 0;
 constexpr uint8_t LEFT_ID = 9;
@@ -629,7 +630,8 @@ bool homeGripper() {
   targetGoal[GRIP_INDEX] = last - GRIP_CLOSE_DIR * GRIP_CLOSE_MARGIN;
   if (!writeItem(GOAL_POSITION, 5, targetGoal[GRIP_INDEX])) return false;
   if (!writeItem(GOAL_CURRENT, 5, gripFollowCurrent)) return false;
-  if (!writeItem(PROFILE_VELOCITY, 5, ARM_PROFILE_VELOCITY)) return false;
+  if (!writeItem(PROFILE_VELOCITY, 5, 360)) return false;
+  if (!writeItem(PROFILE_ACCELERATION, 5, 60)) return false;
   if (DEBUG_SERIAL) {
     DEBUG_SERIAL.print("[GRIP] closed="); DEBUG_SERIAL.println(gripClosedPos);
   }
@@ -1079,17 +1081,16 @@ bool parseLeaderLine(const char *line, int32_t *values) {
     bool negative = false;
     if (line[pos] == '-') { negative = true; ++pos; }
     if (line[pos] < '0' || line[pos] > '9') return false;
-    int32_t value = 0;
+    const int64_t maxMagnitude = field == GRIP_INDEX ? (int64_t)INT32_MAX + (negative ? 1 : 0) : 4095;
+    int64_t value = 0;
     while (line[pos] >= '0' && line[pos] <= '9') {
       value = value * 10 + (line[pos] - '0');
-      if (value > 4095) return false; // bounded BEFORE another multiplication
+      if (value > maxMagnitude) return false;
       ++pos;
     }
     if (negative) value = -value;
-    if (field == GRIP_INDEX) {
-      if (value < -3000 || value > 3000) return false;
-    } else if (value < 0 || value > 4095) return false;
-    values[field] = value;
+    if (field != GRIP_INDEX && value < 0) return false;
+    values[field] = (int32_t)value;
     if (field + 1 < LEADER_JOINT_COUNT) {
       if (line[pos] != ',') return false;
       ++pos;
@@ -1112,8 +1113,11 @@ int32_t gripperGoal(int32_t delta) {
     if (lo > leaderGripClosed) leaderGripClosed = lo;
     if (hi < leaderGripOpen) leaderGripOpen = hi;
   }
-  int32_t span = leaderGripClosed - leaderGripOpen;
-int32_t open = span > 30 ? clamp32(leaderGripClosed - c, 0, GRIP_SPAN - GRIP_OPEN_MARGIN - GRIP_CLOSE_MARGIN) : 0;
+  int64_t span = (int64_t)leaderGripClosed - leaderGripOpen;
+  int64_t requested = (int64_t)leaderGripClosed - c;
+  int32_t maxOpen = GRIP_SPAN - GRIP_OPEN_MARGIN - GRIP_CLOSE_MARGIN;
+  int32_t open = 0;
+  if (span > 30 && requested > 0) open = requested >= maxOpen ? maxOpen : (int32_t)requested;
   return gripClosedPos - GRIP_CLOSE_DIR * (GRIP_CLOSE_MARGIN + open);
 }
 
@@ -1141,7 +1145,7 @@ void applyArmValues(const int32_t *values) {
     if (i == PAIR_INDEX_2) {
       qTarget = clamp32(LEADER_TO_FOLLOWER_J2_SIGN * (values[i] - LEADER_J2_ZERO), qMin, qMax);
     } else if (i == GRIP_INDEX) {
-      if (gripperReady) targetGoal[i] = gripperGoal(values[i]);
+      if (gripperReady && values[i] != GRIP_NO_SAMPLE) targetGoal[i] = gripperGoal(values[i]);
     } else targetGoal[i] = clamp32(values[i], jointMinimum(i), jointMaximum(i));
   }
   lastArmPacketMs = millis();

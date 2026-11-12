@@ -18,3 +18,11 @@ venv/
 *.key
 id_rsa*
 id_ed25519*
+
+# Field recordings and media stay local
+*.csv
+*.mp4
+*.mov
+*.avi
+*.jpg
+*.png

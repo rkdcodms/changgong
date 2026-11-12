@@ -2,15 +2,23 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** PR #4(MS1 미션 통합) 위에서, 실물 없이 끝낼 수 있는 남은 소프트웨어 공백 세 가지를 메운다. ① GitHub에서 Mega 스케치를 실제 AVR로 컴파일하고 모든 모의 시험 실행 ② 경기 중 리셋 후 재시작 시련을 명령줄로 지정 ③ 웹 화면에 시련 상태 표시, 미션 모드에서 "5초 정지" 오표시 제거.
+> **2026-11-13 개정:** 룰북 2026.11.12판(PR #3 `dc80a7f`, SHA-256 `7385722e…4778`)을 반영해 Task R1~R3을 맨 앞에 추가했다. R1은 PR #4의 현재 동작이 **새 규칙을 어기는** 부분이라 가장 먼저 한다. 기존 Task 1~4는 그대로 뒤에 둔다.
 
-**Architecture:** 기존 파일 구조를 따른다. CI는 `.github/workflows/` 한 파일, 재시작 지정은 `scripts/run_mission.py`→`jetson/mission_server.py` 인자 전달, 화면은 `jetson/preview.html`의 `show(s)`에 `s.mission` 분기를 추가한다. 펌웨어·제어 로직(`mission.py`, `mission_link.py`, `.ino`)은 바꾸지 않는다.
+**Goal:** PR #4(MS1 미션 통합)를 11/12 룰북에 맞추고(석상 들어 올림 전 출발 금지, Eval2 시련 4개, 1분 입력, 감점·주회 상한), 그다음 실물 없이 끝낼 수 있는 공백(AVR CI, 재시작 시련 지정, 화면 시련 패널)을 메운다.
+
+**Architecture:** 기존 파일 구조를 따른다. 규칙 변경은 `jetson/mission.py`(이벤트·출발 조건), `jetson/mission_plan.py`(프로필·입력), `tools/score.py`(감점)에 한정한다. Mega 펌웨어(MS1)는 바꿀 필요가 없다 — 정지 유지와 GO는 이미 Jetson이 결정한다. CI는 `.github/workflows/` 한 파일, 화면은 `jetson/preview.html`의 `show(s)`에 `s.mission` 분기를 추가한다.
 
 **Tech Stack:** Python 3 + unittest/pytest, Node 22 (`node:assert`, `vm`), g++ C++17 호스트 하네스, arduino-cli + `arduino:avr` 1.8.8, GitHub Actions.
 
-**Spec:** 사용자 요청(2026-11-12 세션 첫 메시지), `docs/eval2-robocon-20261112/SOFTWARE_AGENT_HANDOFF.txt`(PR #3), `autorobot/MISSION.md` §6·§8·§9.
+**Spec:** 사용자 요청(2026-11-12 세션 첫 메시지), `docs/eval2-robocon-20261113/README.md`와 룰북 2026.11.12판(PR #3), `docs/eval2-robocon-20261112/SOFTWARE_AGENT_HANDOFF.txt`, `autorobot/MISSION.md` §6·§8·§9.
 
 ## Global Constraints
+
+- 룰북 29쪽 Trial Rule: "Auto Robot must stay at the same position (after recognition) until the statue is moved off from the field. The Manual Robot must lift the statue before Auto Robot starts moving again." → 출발 조건에 `statue_lifted` 필수.
+- 룰북 9쪽: 순서 공개 후 코드 수정 시간 **1분**. 시련 수 3~8(일반), Eval2는 **정확히 4개**(ETL 긴급 공지 402104). 선원 0~3.
+- 룰북 34쪽: 상대 진영 침범 시 강제 리셋, **-20 -5 = -25**. 주회 상한 5 × (5 + 시련 수) → Eval2 45점(9바퀴).
+- Classum 132: 수동 로봇이 막아서 세운 정지는 5n 없음. 매니퓰레이터로 AutoRobot 버튼을 누르는 것의 감점 여부는 **후속 공지 대기** — 완료 신호 수단으로 확정하지 않는다.
+- 단순 타이머나 임의 수동 버튼을 `statue_lifted` 충족으로 간주하지 않는다(PR #3 README).
 
 - 펌웨어 업로드, 모터 구동, 장비 배포는 하지 않는다. CI는 컴파일·모의 시험만 한다.
 - 컴파일·모의 시험·실물 결과를 구분해 보고한다. CI 통과를 "장비 검증"이라고 쓰지 않는다.
@@ -22,6 +30,8 @@
 
 ## Review Focus
 
+0. **이전 시련의 늦은 `statue_lifted`가 새 시련 정지를 풀어 버림** — 기대: 시련 번호가 현재 정지 시련과 다르면 거부(`robot_not_stopped_at_this_trial`). → Task R1 테스트 `test_late_lift_from_previous_trial_rejected`.
+0. **선원 0명 시련에서 바로 출발** — 기대: 선원 0명이어도 `statue_lifted` 전에는 정지 유지. → Task R1 테스트.
 1. **미션 모드 STOPPED가 "5초 정지 중"으로 보임** — 사람이 로봇이 곧 출발한다고 오해한다. 기대: `s.mission`이 있으면 "석상 정지 · 출발 명령 대기". → Task 3 테스트 `mission STOPPED label`.
 2. **start 이벤트 중복(엔터 두 번)** — 두 번째 start가 GO를 또 보내면 안 된다. 기대: `(False, 'not_ready:STARTING')`. → Task 2 테스트 `test_double_start_rejected`.
 3. **재시작 시련 번호가 범위 밖이거나 0** — 조용히 1번부터 시작하면 이미 끝난 시련을 다시 찾는다. 기대: `--check` 단계에서 거부, 종료 코드 1. → Task 2 테스트.
@@ -29,6 +39,70 @@
 5. **CI에서 AVR 코어 다운로드 실패** — 컴파일 단계를 건너뛰고 초록으로 끝나면 안 된다. 기대: job 실패. → Task 1 Step 3(확인 방법 고정, `continue-on-error` 금지).
 
 ---
+
+### Task R1: `statue_lifted` 상태와 출발 조건 (룰북 29쪽) — 최우선
+
+**Files:**
+- Modify: `autorobot/jetson/mission.py` (`EVENT_KINDS`, `MissionConfig`, `TrialState`, `_apply`, `_may_depart`, `status`)
+- Modify: `autorobot/scripts/mission_event.py` (`KINDS`), `autorobot/config/mission.example.json`, `autorobot/MISSION.md` §4·§5
+- Test: `autorobot/tests/test_mission.py`
+
+**Interfaces:**
+- Produces: 이벤트 종류 `statue_lifted`(시련 번호 필수). `TrialState.statue: str` = `ON_FIELD → LIFTED`, `TrialState.statue_lifted_at: float|None`. 출발 조건 = `crew_satisfied and statue == 'LIFTED' and departure_clear_at is not None and dwell >= min_dwell_s`. `departure_clear`는 `statue == 'LIFTED'` 이후에만 수락(아니면 `statue_not_lifted`). `statue_lifted`는 crew 충족 이후에만 수락(아니면 `crew_pending` — 룰북 29쪽 6항 첫 줄). `altar_done`은 `statue == 'LIFTED'`도 요구(아니면 `statue_not_lifted`). status의 trials 항목에 `statue` 키 추가.
+- 제거: `departure_policy='timed'`와 `timed_base_s`, `timed_per_crew_s`. `MissionConfig(departure_policy='timed')`는 `ValueError('timed departure cannot confirm the statue was lifted (rulebook p.29)')`. `UNVERIFIED` crew 상태도 더 이상 생기지 않는다.
+
+- [ ] **Step 1: 실패 테스트 작성** — 기존 `test_full_game_with_lead_move_and_separate_altar_state`를 수정: `crew_done 1` 후 `departure_clear 1` → `(False, 'statue_not_lifted')`, 200 step 동안 `mega.mode == STOPPED`; `statue_lifted 1` → True; `departure_clear 1` → True → SEEKING(2). 새 테스트:
+
+```python
+def test_zero_crew_still_waits_for_lift(self):          # 시련 2는 crew 0
+    ... arrive(2) 후 departure_clear 2 -> (False, 'statue_not_lifted'); step(200); mega STOPPED
+    statue_lifted 2 -> True; departure_clear 2 -> True; until SEEKING(3)
+
+def test_lift_before_crew_rejected(self):
+    arrive(5); statue_lifted 1 -> (False, 'crew_pending')
+
+def test_late_lift_from_previous_trial_rejected(self):
+    시련 1 완료·출발 후 arrive(2); statue_lifted 1 -> (False, 'already_lifted');
+    statue_lifted 3 -> (False, 'robot_not_stopped_at_this_trial'); mega STOPPED 유지
+
+def test_link_loss_while_waiting_for_lift_keeps_robot_stopped(self):
+    arrive(5); crew_done 1; mega.dropped=True; step(100) -> runner FAULT, mega FAULT(제동)
+```
+
+  `test_timed_policy_departs_but_never_claims_crew_done`는 `test_timed_policy_rejected`(ValueError)로 교체. `test_continue_after_last_then_park`, `test_duplicate_delayed_and_wrong_trial_events`, `test_restart_does_not_redo_previous_trial_after_reconnect`는 각 시련에 `statue_lifted`를 끼워 넣는다.
+- [ ] **Step 2: 실패 확인** — `cd autorobot && python3 -m pytest -q tests/test_mission.py` → `statue_not_lifted`/`unknown_kind` 관련 FAIL.
+- [ ] **Step 3: 구현** — 위 Interfaces 그대로. `mission_event.py`의 시련 번호 필수 목록에 `statue_lifted` 추가.
+- [ ] **Step 4: 통과 확인** — `python3 -m pytest -q tests` 전체 PASS.
+- [ ] **Step 5: 문서** — MISSION.md §4 표에 `STOPPED(n) → (crew 충족) → statue_lifted → departure_clear → DEPARTING`, §5 감지 표에 `statue_lifted` 행 추가: 후보 = 측면 카메라에서 목표 석상이 정지 구역에서 사라짐(단, 수동 로봇이 시야를 가리면 거짓 "들어 올림"이 되므로 현장 영상으로 검증 전 사용 금지), 또는 버튼(Classum 132 후속 공지 대기).
+- [ ] **Step 6: 커밋** — `autorobot: hold at the statue until it is lifted (rulebook 2026.11.12 p.29)`.
+
+### Task R2: Eval2 프로필(시련 4개)과 1분 입력
+
+**Files:**
+- Modify: `autorobot/jetson/mission_plan.py` (`build_plan`, `parse_cli`, `canonical`), `autorobot/scripts/mission_plan.py`, `autorobot/scripts/run_mission.py`
+- Test: `autorobot/tests/test_mission.py` (`PlanTests`)
+
+**Interfaces:**
+- Produces: `PROFILES = {'eval2': (4, 4), 'robocon': (3, 8)}`; `build_plan(statues, crews, allow_repeat=False, profile='robocon')`; `parse_cli(order, crews, profile='robocon')`; plan JSON에 `"profile"` 키(없으면 `robocon`으로 읽음); 두 스크립트에 `--profile {eval2,robocon}`(기본 `robocon`, 경기장 스크립트 예시는 `eval2`). `canonical`은 고유 접두사 3글자 이상 허용(`scy`→Scylla), 모호하면(`ca` → Calypso/Cattle) 후보를 적은 ValueError. 한 줄 입력 `--line "scy 2, cyc 0, sir 3, tro 1"`도 `--order/--crew` 대신 받는다.
+
+- [ ] **Step 1: 실패 테스트** — `parse_cli('Scylla,Cyclops,Siren','1,1,1', profile='eval2')` → ValueError(`Eval2 needs exactly 4 trials`); 4개는 통과; `canonical('scy') == 'Scylla'`; `canonical('ca')` → ValueError에 `Calypso`와 `Cattle` 포함; `canonical('cy')` → ValueError(3글자 미만); `parse_line('scy 2, cyc 0, sir 3, tro 1', 'eval2')`의 결과가 `parse_cli('Scylla,Cyclopes,Siren,TrojanHorse','2,0,3,1','eval2')`와 같음; profile 없는 기존 plan JSON 로드 성공.
+- [ ] **Step 2: 실패 확인** — `python3 -m pytest -q tests/test_mission.py -k Plan` → FAIL.
+- [ ] **Step 3: 구현** — 위 Interfaces. `mission_plan.parse_line(text: str, profile: str) -> MissionPlan`.
+- [ ] **Step 4: 통과 확인 + 시간 측정** — 전체 테스트 PASS. 팀원 1명이 화면 예시 3개를 보고 `scripts/mission_plan.py --profile eval2 --line ...` 입력·대조를 끝내는 시간을 재서 `tools/field_log.py add task --task plan_entry --seconds ...`로 기록(목표 30초 이내, 1분 제한의 절반).
+- [ ] **Step 5: 커밋** — `autorobot: eval2 profile (4 trials) and one-line plan entry`.
+
+### Task R3: 점수 계산·표시 갱신
+
+**Files:**
+- Modify: `autorobot/tools/score.py`, `autorobot/MISSION.md` §6 고장 표
+- Test: `autorobot/tests/test_field_tools.py` (`ScoreTests`)
+
+**Interfaces:**
+- Produces: `score(..., intrusions=0)` — 침범 1회 = `rules.collision + rules.reset` = −25; CLI `--intrusions`. `collisions`는 침범 없는 충돌만.
+
+- [ ] **Step 1: 실패 테스트** — `score([0]*4, ['none']*4, [0]*4, [0]*4, intrusions=1)['penalty'] == -25`; Eval2 4개 시련 `laps=20` → `laps == 45`.
+- [ ] **Step 2~4:** 실패 확인 → 구현 → `python3 -m pytest -q tests/test_field_tools.py` PASS.
+- [ ] **Step 5: 커밋** — `autorobot: count forced reset after intrusion as -25`.
 
 ### Task 1: CI — AVR 컴파일과 모의 시험
 
@@ -92,7 +166,7 @@ def test_double_start_rejected(self):
 
 - [ ] **Step 2: 실패 확인** — `cd autorobot && python3 -m pytest -q tests/test_mission_runtime.py tests/test_mission.py -k "start_trial or double_start"` → `apply_start_trial` 없음/`start_trial` 인자 없음으로 FAIL (double_start는 이미 PASS일 수 있음 — 그 경우 기존 동작이 맞다는 증거로 남긴다).
 - [ ] **Step 3: 구현** — `mission_server.parse_args`에 `--start-trial` (`type=int`, 기본 None). `main`에서 `config = apply_start_trial(load_config(...), args.start_trial, len(plan.trials))`. `run_mission.command(..., start_trial=None)`가 값이 있을 때 `['--start-trial', str(n)]`을 덧붙이고, `main`에 같은 인자를 추가해 `--check` 단계에서 `apply_start_trial`로 검증한다(오류 시 기존처럼 `Cannot start:` + 종료 코드 1). `--check` 출력에 `RESTART AT TRIAL n: <statue>` 한 줄.
-- [ ] **Step 4: 통과 확인** — `python3 -m pytest -q tests` → 전체 PASS, 개수 = 이전 112 + 3.
+- [ ] **Step 4: 통과 확인** — `python3 -m pytest -q tests` → 전체 PASS (R1~R3 이후 개수 + 3).
 - [ ] **Step 5: 문서** — §6 표의 리셋 행을 `--start-trial n`(남은 첫 시련 번호, 1부터) 사용으로 바꾼다.
 - [ ] **Step 6: 커밋** — `git add autorobot/jetson/mission_server.py autorobot/scripts/run_mission.py autorobot/tests autorobot/MISSION.md` → `autorobot: --start-trial for restart after a reset`.
 
@@ -146,6 +220,9 @@ assert.equal(nodes.get('mode').textContent, '5초 정지 중');
 - [ ] **Step 3: PR #4 본문 갱신** — 검증 표에 CI run 링크와 AVR 사용량을 추가하고, "실물 미수행" 줄은 유지.
 
 ## 이 계획에 넣지 않은 것 (현장·조교 답변이 필요해 막혀 있음)
+
+- **`statue_lifted`·`departure_clear` 자동 감지:** R1은 이벤트와 출발 조건만 만든다. 카메라로 "석상 사라짐"을 볼지, 버튼을 쓸지는 (a) 수동 로봇이 석상을 들 때 측면 카메라 영상 기록, (b) Classum 132 버튼 후속 공지가 나온 뒤 별도 계획으로 정한다.
+- **히든 미션 진입 시각:** 11/12판에도 23쪽 "after 3:30"과 29쪽 "any time"이 함께 남아 있다. 수동 로봇 운영 문제라 이 계획에 넣지 않는다.
 
 - **선원 이송 완료·출발 공간 자동 감지:** 센서 종류(갑판 하중 센서/거리 센서)와 허용 여부가 정해져야 `source='sensor'` 이벤트 생성기를 설계할 수 있다. 답이 나오면 별도 계획을 쓴다.
 - **수동 로봇 모터 모델 확인 코드:** ID1·3·4·5의 실제 모델과 5V/12V 배선이 확인돼야 기대 모델 번호를 정할 수 있다. 별도 계획을 쓴다(텔레오퍼레이션은 독립 하위 시스템).

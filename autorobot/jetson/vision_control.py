@@ -35,7 +35,8 @@ class BoundedLines:
         return rows
 
 
-def parse_line(line):
+def parse_line(line, reasons=None):
+    reasons = REASONS if reasons is None else reasons
     if not isinstance(line, bytes) or len(line) > 96:
         return None
     parts = line.rstrip(b'\r\n').split(b',')
@@ -55,7 +56,7 @@ def parse_line(line):
             return None
         return 'lt', dict(mode=mode, seq=seq, age=age, uptime=uptime, test=test)
     session, event, label, reason, live = values
-    if label not in (-1, *NAMES) or reason not in REASONS or live not in (0, 1):
+    if label not in (-1, *NAMES) or reason not in reasons or live not in (0, 1):
         return None
     return 'v1', dict(session=session, event=event, label=label, reason=reason, live=live)
 
@@ -86,6 +87,8 @@ class VisionStopController:
     Recover those by restarting this program and RESETting the Mega. Ordinary
     stale frames suppress heartbeats; Mega's own 1500 ms watchdog provides stop.
     """
+    REASONS = REASONS
+
     def __init__(self, session, confidence=.55, min_frames=3, min_span=.2,
                  absence=1.5, restart_cooldown=2., frame_freshness=1.,
                  serial_freshness=.75, continuity_gap=.35):
@@ -144,7 +147,7 @@ class VisionStopController:
             self._fault(str(reason), now)
 
     def ingest_line(self, line, now):
-        parsed = parse_line(line)
+        parsed = parse_line(line, self.REASONS)
         if parsed is None:
             return False
         with self.lock:
@@ -311,7 +314,7 @@ class VisionStopController:
                     'mega_mode_id': self.lt['mode'] if self.lt else None,
                     'mega_mode': MODES[self.lt['mode']] if self.lt else 'UNSEEN',
                     'stop_seq': self.lt['seq'] if self.lt else None,
-                    'stop_reason': REASONS[self.v1['reason']] if self.v1 else 'UNSEEN',
+                    'stop_reason': self.REASONS[self.v1['reason']] if self.v1 else 'UNSEEN',
                     'link_live': bool(self.v1['live']) if self.v1 else False,
                     'pending_event': pending, 'last_ack': dict(self.last_ack) if self.last_ack else None,
                     'last_request': dict(self.last_request) if self.last_request else None,

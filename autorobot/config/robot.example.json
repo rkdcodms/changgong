@@ -1,0 +1,14 @@
+{
+  "bind": "YOUR_JETSON_TAILSCALE_IPV4",
+  "port": 8765,
+  "allow_tailscale": true,
+  "allowed_clients": [],
+  "camera": "/dev/video0",
+  "rotate_ccw": 90,
+  "serial": "/dev/serial/by-id/REPLACE_WITH_ARDUINO_MEGA",
+  "weights": "models/best.pt",
+  "confidence": 0.55,
+  "stop_zone_left": 0.4,
+  "stop_zone_right": 0.6,
+  "max_seconds": 0
+}

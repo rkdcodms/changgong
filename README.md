@@ -2,7 +2,16 @@
 
 창의공학설계 AutoRobot 팀 공유 저장소.
 
-## 현재 사용할 라인트레이서
+## 카메라 연동 오토로봇
+
+동상 인식 후 5초 정지하는 라인트레이서와 Chrome 카메라 화면은 [autorobot 실행 안내](autorobot/README.md)에 있다. Jetson 코드, 화면 v3, Mega 펌웨어, 팀용 설정 예시를 함께 제공한다.
+
+- 같은 Jetson에 Tailscale로 접속할 수 있는 팀원은 PC별 IP 등록 없이 영상에 접근하도록 설정할 수 있다.
+- 설정 변경은 SSH에서 로컬 설정 파일을 수정하고 적용한다. 카메라 페이지는 영상과 상태를 표시한다.
+- 카메라 연동 시험에는 `autorobot/arduino/vision_stop/vision_stop.ino`와 `autorobot/jetson`을 함께 사용한다.
+- 공유 코드는 오프라인 검사를 통과했으며, 이번 팀 접속 설정은 실제 Jetson에 아직 적용하지 않았다.
+
+## 라인트레이서 단독 코드
 
 Arduino Mega 2560용 코드는 [line_tracer_ver3_updated.ino](arduino/line_tracer_ver3_updated/line_tracer_ver3_updated.ino)에 있다. 팀이 제공한 `line_tracer_ver3.ino`에서 모터 방향 핀 네 개와 정지 시간만 바꿨다. 기존 주행 로직, 센서 판정, 속도 설정은 유지했다. 소스 머리말의 `ver2` 표기도 원본에 있던 것이다.
 

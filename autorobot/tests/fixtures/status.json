@@ -1,0 +1,33 @@
+{
+  "ok": true,
+  "serial_ready": true,
+  "model_ready": true,
+  "inference_fps": 20,
+  "fps": 8,
+  "frame_sequence": 42,
+  "width": 480,
+  "height": 640,
+  "rotation_ccw": 90,
+  "unlimited": true,
+  "remaining_seconds": null,
+  "stop_zone": {"left": 0.4, "right": 0.6},
+  "stop_confidence_threshold": 0.55,
+  "stop_min_span_seconds": 0.1,
+  "stop_min_frames": 3,
+  "sensor_values": [800, 800, 800, 100, 100, 800, 800, 800],
+  "white_count": 2,
+  "normal_line": true,
+  "sensor_age_seconds": 0.1,
+  "detections": [{"class_id": 2, "class_name": "Cyclopes", "confidence": 0.982, "bbox": [200, 150, 280, 350], "stop_eligible": true}],
+  "control": {
+    "mega_mode": "FOLLOW",
+    "stop_seq": 2,
+    "stop_reason": "NONE",
+    "heartbeat_allowed": true,
+    "fatal": null,
+    "pending_event": null,
+    "last_ack": {"event": 2, "class_id": 2, "class_name": "Cyclopes", "stop_seq": 2},
+    "latched_classes": [2],
+    "total_accepted_stops": 2
+  }
+}

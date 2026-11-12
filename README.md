@@ -67,3 +67,8 @@ arduino-cli compile --fqbn arduino:avr:mega arduino/line_tracer_ver3_updated
 ## Eval2 · ROBOCON 최신 자료 (2026-11-12)
 
 [최신 룰북·룰 개정·DJI 매뉴얼·Classum 답변·소프트웨어 인계](docs/eval2-robocon-20261112/README.md)를 먼저 확인한다. 룰북은 개인 연락처를 가린 공개용 사본이며, 확인 이후 공지가 바뀌면 다시 대조한다.
+
+
+## Eval2 긴급 정정 (2026-11-13)
+
+[최신 룰북·시련 4개·재출발 조건·감점 정정](docs/eval2-robocon-20261113/README.md)을 먼저 확인한다. 이전 11월 12일 자료의 선행 이동 조건은 최신 룰북의 석상 바닥 이탈 조건과 함께 읽는다.

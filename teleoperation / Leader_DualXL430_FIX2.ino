@@ -1,5 +1,6 @@
 // OpenRB-150 Leader with startup homing, compatible with ManualRobot_DualXL430.ino.
 // Bluetooth format NEVER changes: p1,p2,p3,p4,gripper_delta\n (FIVE values).
+// INT32_MIN in the fifth field means no fresh gripper sample this frame.
 // The Follower computes its ID6 goal from the logical joint-2 value.
 // Original boot flow: command 2048 with a slow motor profile, wait 3 seconds,
 // then torque OFF and stream ACTUAL measured positions. No exact-arrival gate.
@@ -21,7 +22,7 @@
 #define DXL_SERIAL Serial1
 #define DEBUG_SERIAL Serial
 #define BLT_SERIAL Serial2
-#define FIRMWARE_LABEL "LEADER_REV6_FIX2_20261112"
+#define FIRMWARE_LABEL "LEADER_GRIP_TRACK_20261112"
 
 using namespace ControlTableItem;
 Dynamixel2Arduino dxl(DXL_SERIAL, -1);
@@ -41,7 +42,7 @@ constexpr int LEADER_J2_SIGN = +1;
 
 // Keep the original Leader gripper delta convention (current position - 2048).
 constexpr int32_t GRIPPER_REFERENCE_RAW = 2048;
-constexpr int32_t GRIPPER_DELTA_LIMIT = 3000;
+constexpr int32_t GRIP_NO_SAMPLE = INT32_MIN;
 constexpr uint32_t SEND_INTERVAL_US = 25000; // original 25 ms / 40 Hz
 constexpr uint32_t READ_TIMEOUT_MS = 5;     // per expected status packet
 constexpr uint32_t CONFIG_TIMEOUT_MS = 100;
@@ -85,6 +86,7 @@ DYNAMIXEL::XELInfoSyncRead_t readXels[LEADER_MOTOR_COUNT] = {};
 uint8_t readPacketBuffer[128] = {};
 bool ready = false, latched = false;
 bool configurationIO = true, gripperAvailable = true;
+bool gripperSampleValid = false; // reset before EVERY Sync Read
 uint8_t readMotorIndex[LEADER_MOTOR_COUNT] = {};
 const char *statusReason = "starting";
 uint8_t faultId = 0;
@@ -225,6 +227,7 @@ void disableGripper(const char *reason) {
   dxl.writeNoResp(DXL_IDS[GRIPPER_INDEX], 64, &off, 1);
   settleUnacknowledgedWrite();
   gripperAvailable = false;
+  gripperSampleValid = false;
   prepareSyncRead();
   prepareHomeWrite();
   lastIoFailure.valid = false;
@@ -302,7 +305,8 @@ void prepareSyncRead() {
 
 bool readPoseWithTorque(int32_t *raw, uint8_t expectedTorque) {
   // A missing or short response must not reuse a previous joint value.
-  raw[GRIPPER_INDEX] = GRIPPER_REFERENCE_RAW; // absent ID5 -> fifth CSV value 0
+  raw[GRIPPER_INDEX] = GRIPPER_REFERENCE_RAW;
+  gripperSampleValid = false; // absent/missing ID5 emits GRIP_NO_SAMPLE, never a stale delta
   uint8_t expectedCount = readInfo.xel_count;
   for (uint8_t slot = 0; slot < expectedCount; ++slot) {
     uint8_t i = readMotorIndex[slot];
@@ -321,6 +325,17 @@ bool readPoseWithTorque(int32_t *raw, uint8_t expectedTorque) {
     bool torqueBad = samples[i].torque != expectedTorque;
     bool homeRangeBad = expectedTorque == 1 &&
         (samples[i].position < 0 || samples[i].position > 4095);
+    bool confirmedFault =
+        (readXels[slot].error != 0xFF && readXels[slot].error != 0) ||
+        (samples[i].hardwareError != 0xFF && samples[i].hardwareError != 0) ||
+        (samples[i].torque != 0xFF && samples[i].torque != expectedTorque);
+    if (i == GRIPPER_INDEX && missing && !confirmedFault &&
+        expectedTorque == 0 && ready && !homeActive) {
+      // A passive-mode dropout affects ONLY this frame. Keep ID5 in the next
+      // Sync Read so a fresh response resumes tracking without a power cycle.
+      droppedOptional = true;
+      continue;
+    }
     if (i == GRIPPER_INDEX && (missing || statusBad || torqueBad || homeRangeBad)) {
       captureIoFailure("syncRead", DXL_IDS[i], PRESENT_POSITION, samples[i].position);
       disableGripper(missing ? "missing position response" :
@@ -342,6 +357,7 @@ bool readPoseWithTorque(int32_t *raw, uint8_t expectedTorque) {
       latchLeader("unexpected Leader torque state", DXL_IDS[i]); return false;
     }
     raw[i] = samples[i].position;
+    if (i == GRIPPER_INDEX) gripperSampleValid = true;
   }
   if (receivedCount < GRIPPER_INDEX ||
       (!droppedOptional && (receivedCount != expectedCount || readError != DXL_LIB_OK))) {
@@ -525,13 +541,15 @@ bool makeFollowerValues(const int32_t *raw, int32_t *values) {
   }
   int32_t joint2 = FOLLOWER_J2_REFERENCE + LEADER_J2_SIGN * (raw[JOINT2_INDEX] - LEADER_J2_ZERO_RAW);
   if (joint2 < 0 || joint2 > 4095) return false;
-  int64_t gripperDelta = gripperAvailable ? (int64_t)raw[GRIPPER_INDEX] - GRIPPER_REFERENCE_RAW : 0;
-  if (gripperDelta < -GRIPPER_DELTA_LIMIT || gripperDelta > GRIPPER_DELTA_LIMIT) {
-    disableGripper("gripper delta outside valid transmission range"); gripperDelta = 0;
+  int32_t gripperDelta = GRIP_NO_SAMPLE;
+  if (gripperAvailable && gripperSampleValid) {
+    int64_t delta = (int64_t)raw[GRIPPER_INDEX] - GRIPPER_REFERENCE_RAW;
+    // Reserve INT32_MIN as the no-sample marker; never overflow or wrap CSV.
+    if (delta > INT32_MIN && delta <= INT32_MAX) gripperDelta = (int32_t)delta;
   }
   for (uint8_t i = 0; i < LOGICAL_JOINT_COUNT; ++i) values[i] = raw[i];
   values[JOINT2_INDEX] = joint2;
-  values[GRIPPER_INDEX] = (int32_t)gripperDelta;
+  values[GRIPPER_INDEX] = gripperDelta;
   return true;
 }
 

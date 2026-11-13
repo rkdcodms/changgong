@@ -1,0 +1,24 @@
+{
+  "rulebook_source": "https://myetl.snu.ac.kr/courses/306529/files/9628564/download",
+  "source_date": "2026-11-10",
+  "checked_date": "2026-11-12",
+  "redaction": "Page 2 email and phone only; remaining pages text verified unchanged",
+  "redaction_count": 2,
+  "files": [
+    {
+      "path": "DJI_Action4_Usage.pdf",
+      "bytes": 553762,
+      "sha256": "023df76918e5a8b3b990f2e0d60eaa6a6036209997bd197f3fe30ecfbdc6633f"
+    },
+    {
+      "path": "ROBOCON_Rulebook_20261110_public.pdf",
+      "bytes": 5876910,
+      "sha256": "26d907e73930e57aa99fbc4a66a0383acd0f756e01eec57b6fdd556901d30e0b"
+    },
+    {
+      "path": "Eval2_ROBOCON_Changes_20261110.pdf",
+      "bytes": 508547,
+      "sha256": "49fbbc5ea425eef2789a9bfbf60d315314fdcfc457f3972d6310ab0278b66bab"
+    }
+  ]
+}

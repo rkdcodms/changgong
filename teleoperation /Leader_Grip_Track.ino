@@ -93,7 +93,6 @@ uint8_t faultId = 0;
 uint32_t sentFrames = 0, rejectedFrames = 0, busyFrames = 0;
 bool homeActive = false;
 uint32_t homeStartedMs = 0, homeLastTickMs = 0;
-int32_t homeStart[LEADER_MOTOR_COUNT] = {};
 int32_t homeGoals[LEADER_MOTOR_COUNT] = {};
 DYNAMIXEL::InfoSyncWriteInst_t homeWriteInfo = {};
 DYNAMIXEL::XELInfoSyncWrite_t homeWriteXels[LEADER_MOTOR_COUNT] = {};
@@ -108,6 +107,8 @@ struct IoFailure {
 IoFailure lastIoFailure = {}, faultIoFailure = {};
 
 bool motorEnabled(uint8_t index) { return index != GRIPPER_INDEX || gripperAvailable; }
+bool inRawRange(int32_t value) { return value >= 0 && value <= 4095; }
+int32_t min32(int32_t a, int32_t b) { return a < b ? a : b; }
 
 void captureIoFailure(const char *operation, uint8_t id, uint8_t item, int32_t value) {
   lastIoFailure.valid = true;
@@ -234,43 +235,43 @@ void disableGripper(const char *reason) {
 }
 
 bool configureMotor(uint8_t i) {
-    uint8_t id = DXL_IDS[i];
-    faultId = id;
-    if (!dxl.ping(id)) {
-      captureIoFailure("ping", id, MODEL_NUMBER, 0);
-      statusReason = "missing Leader motor"; return false;
-    }
-    if (!ensureStatusReturnLevel(id)) { statusReason = "Leader response level setup failed"; return false; }
-    uint16_t model = dxl.getModelNumber(id);
-    const DYNAMIXEL::ControlTableItemInfo_t pos =
-        DYNAMIXEL::getControlTableItemInfo(model, PRESENT_POSITION);
-    const DYNAMIXEL::ControlTableItemInfo_t torque =
-        DYNAMIXEL::getControlTableItemInfo(model, TORQUE_ENABLE);
-    const DYNAMIXEL::ControlTableItemInfo_t error =
-        DYNAMIXEL::getControlTableItemInfo(model, HARDWARE_ERROR_STATUS);
-    if (pos.addr != 132 || pos.addr_length != 4 || torque.addr != 64 ||
-        torque.addr_length != 1 || error.addr != 70 || error.addr_length != 1) {
-      statusReason = "unsupported Leader control table"; return false;
-    }
-    int32_t hardwareError, drive;
-    if (!writeItem(TORQUE_ENABLE, id, 0) || !readItem(HARDWARE_ERROR_STATUS, id, hardwareError)) {
-      statusReason = "Leader torque/status setup failed"; return false;
-    }
-    if (hardwareError != 0) { statusReason = "Leader hardware error"; return false; }
-    if (!writeItem(BUS_WATCHDOG, id, 0) ||
-        !setIfChanged(OPERATING_MODE, id, i == GRIPPER_INDEX ? OP_CURRENT_BASED_POSITION : OP_POSITION) ||
-        !readItem(DRIVE_MODE, id, drive)) {
-      statusReason = "Leader mode setup failed"; return false;
-    }
-    drive &= ~0x0C; // velocity-based profile, no torque-on-by-goal
-    if (i == JOINT2_INDEX) drive = 0;
-    if (!setIfChanged(DRIVE_MODE, id, drive)) {
-      statusReason = "Leader direction setup failed"; return false;
-    }
-    int32_t torqueEnabled;
-    if (!readItem(TORQUE_ENABLE, id, torqueEnabled) || torqueEnabled != 0) {
-      statusReason = "Leader torque is not OFF"; return false;
-    }
+  uint8_t id = DXL_IDS[i];
+  faultId = id;
+  if (!dxl.ping(id)) {
+    captureIoFailure("ping", id, MODEL_NUMBER, 0);
+    statusReason = "missing Leader motor"; return false;
+  }
+  if (!ensureStatusReturnLevel(id)) { statusReason = "Leader response level setup failed"; return false; }
+  uint16_t model = dxl.getModelNumber(id);
+  const DYNAMIXEL::ControlTableItemInfo_t pos =
+      DYNAMIXEL::getControlTableItemInfo(model, PRESENT_POSITION);
+  const DYNAMIXEL::ControlTableItemInfo_t torque =
+      DYNAMIXEL::getControlTableItemInfo(model, TORQUE_ENABLE);
+  const DYNAMIXEL::ControlTableItemInfo_t error =
+      DYNAMIXEL::getControlTableItemInfo(model, HARDWARE_ERROR_STATUS);
+  if (pos.addr != 132 || pos.addr_length != 4 || torque.addr != 64 ||
+      torque.addr_length != 1 || error.addr != 70 || error.addr_length != 1) {
+    statusReason = "unsupported Leader control table"; return false;
+  }
+  int32_t hardwareError, drive;
+  if (!writeItem(TORQUE_ENABLE, id, 0) || !readItem(HARDWARE_ERROR_STATUS, id, hardwareError)) {
+    statusReason = "Leader torque/status setup failed"; return false;
+  }
+  if (hardwareError != 0) { statusReason = "Leader hardware error"; return false; }
+  if (!writeItem(BUS_WATCHDOG, id, 0) ||
+      !setIfChanged(OPERATING_MODE, id, i == GRIPPER_INDEX ? OP_CURRENT_BASED_POSITION : OP_POSITION) ||
+      !readItem(DRIVE_MODE, id, drive)) {
+    statusReason = "Leader mode setup failed"; return false;
+  }
+  drive &= ~0x0C; // velocity-based profile, no torque-on-by-goal
+  if (i == JOINT2_INDEX) drive = 0;
+  if (!setIfChanged(DRIVE_MODE, id, drive)) {
+    statusReason = "Leader direction setup failed"; return false;
+  }
+  int32_t torqueEnabled;
+  if (!readItem(TORQUE_ENABLE, id, torqueEnabled) || torqueEnabled != 0) {
+    statusReason = "Leader torque is not OFF"; return false;
+  }
   return true;
 }
 
@@ -323,8 +324,7 @@ bool readPoseWithTorque(int32_t *raw, uint8_t expectedTorque) {
     bool missing = samples[i].position == INT32_MIN || readXels[slot].error == 0xFF;
     bool statusBad = readXels[slot].error != 0 || samples[i].hardwareError != 0;
     bool torqueBad = samples[i].torque != expectedTorque;
-    bool homeRangeBad = expectedTorque == 1 &&
-        (samples[i].position < 0 || samples[i].position > 4095);
+    bool homeRangeBad = expectedTorque == 1 && !inRawRange(samples[i].position);
     bool confirmedFault =
         (readXels[slot].error != 0xFF && readXels[slot].error != 0) ||
         (samples[i].hardwareError != 0xFF && samples[i].hardwareError != 0) ||
@@ -368,26 +368,17 @@ bool readPoseWithTorque(int32_t *raw, uint8_t expectedTorque) {
   return true;
 }
 
-bool readFreshPose(int32_t *raw) {
-  return readPoseWithTorque(raw, 0);
-}
-
 bool startupPoseInRange(const int32_t *raw) {
   for (uint8_t i = 0; i < LEADER_MOTOR_COUNT; ++i)
-    if (motorEnabled(i) && (raw[i] < 0 || raw[i] > 4095)) return false;
+    if (motorEnabled(i) && !inRawRange(raw[i])) return false;
   return true;
-}
-
-bool writeStartupGoals() {
-  homeWriteInfo.is_info_changed = true;
-  return dxl.syncWrite(&homeWriteInfo);
 }
 
 bool configureStartupMotor(uint8_t i, const int32_t *raw) {
   uint8_t id = DXL_IDS[i];
   faultId = id;
   int32_t pwmLimit, velocityLimit;
-  if (HOME_TARGET_RAW[i] < 0 || HOME_TARGET_RAW[i] > 4095) {
+  if (!inRawRange(HOME_TARGET_RAW[i])) {
     statusReason = "invalid home target"; return false;
   }
   if (i != GRIPPER_INDEX) {
@@ -403,8 +394,8 @@ bool configureStartupMotor(uint8_t i, const int32_t *raw) {
       !readItem(VELOCITY_LIMIT, id, velocityLimit) || velocityLimit <= 0) {
     statusReason = "invalid homing PWM/velocity limit"; return false;
   }
-  int32_t pwm = pwmLimit < HOME_PWM_CAP_RAW ? pwmLimit : HOME_PWM_CAP_RAW;
-  int32_t velocity = velocityLimit < HOME_PROFILE_VELOCITY ? velocityLimit : HOME_PROFILE_VELOCITY;
+  int32_t pwm = min32(pwmLimit, HOME_PWM_CAP_RAW);
+  int32_t velocity = min32(velocityLimit, HOME_PROFILE_VELOCITY);
   if (!writeItem(GOAL_PWM, id, pwm) ||
       !writeItem(PROFILE_VELOCITY, id, velocity) ||
       !writeItem(PROFILE_ACCELERATION, id, HOME_PROFILE_ACCELERATION)) {
@@ -415,43 +406,41 @@ bool configureStartupMotor(uint8_t i, const int32_t *raw) {
     if (!readItem(CURRENT_LIMIT, id, currentLimit) || currentLimit <= 0) {
       statusReason = "invalid gripper current limit"; return false;
     }
-    int32_t current = currentLimit < HOME_GRIP_CURRENT_RAW ? currentLimit : HOME_GRIP_CURRENT_RAW;
+    int32_t current = min32(currentLimit, HOME_GRIP_CURRENT_RAW);
     if (!writeItem(GOAL_CURRENT, id, current)) {
       statusReason = "gripper homing current setup failed"; return false;
     }
   }
-
   return true;
 }
 
 bool enableStartupMotor(uint8_t i) {
-  faultId = DXL_IDS[i];
+  uint8_t id = DXL_IDS[i];
+  faultId = id;
   int32_t current;
   // Re-read each joint immediately before enabling it. Other setup writes
   // must not leave us using an old pose after an unsupported arm has moved.
-  if (!readItem(PRESENT_POSITION, DXL_IDS[i], current) || current < 0 || current > 4095) {
+  if (!readItem(PRESENT_POSITION, id, current) || !inRawRange(current)) {
     statusReason = "homing pre-enable position read failed"; return false;
   }
-  homeStart[i] = homeGoals[i] = current;
-  if (!writeItem(GOAL_POSITION, DXL_IDS[i], current) ||
-      !writeItem(BUS_WATCHDOG, DXL_IDS[i], 10)) {
+  homeGoals[i] = current;
+  if (!writeItem(GOAL_POSITION, id, current) || !writeItem(BUS_WATCHDOG, id, 10)) {
     statusReason = "homing hold/watchdog setup failed"; return false;
   }
-  if (!writeItem(TORQUE_ENABLE, DXL_IDS[i], 1)) {
-    statusReason = "homing torque enable failed"; faultId = DXL_IDS[i]; return false;
+  if (!writeItem(TORQUE_ENABLE, id, 1)) {
+    statusReason = "homing torque enable failed"; return false;
   }
-
   return true;
 }
 
 bool beginStartupHome() {
   ready = false;
   int32_t raw[LEADER_MOTOR_COUNT] = {};
-  if (!readFreshPose(raw)) {
+  if (!readPoseWithTorque(raw, 0)) {
     if (!latched) statusReason = "invalid starting pose for homing";
     return false;
   }
-  if (gripperAvailable && (raw[GRIPPER_INDEX] < 0 || raw[GRIPPER_INDEX] > 4095))
+  if (gripperAvailable && !inRawRange(raw[GRIPPER_INDEX]))
     disableGripper("gripper starting position outside homing range");
   if (!startupPoseInRange(raw)) {
     statusReason = "invalid starting pose for homing"; return false;
@@ -480,7 +469,8 @@ bool beginStartupHome() {
   // Preserve the original fixed wait; do not gate streaming on exact arrival.
   for (uint8_t i = 0; i < LEADER_MOTOR_COUNT; ++i)
     if (motorEnabled(i)) homeGoals[i] = HOME_TARGET_RAW[i];
-  if (!writeStartupGoals()) {
+  homeWriteInfo.is_info_changed = true;
+  if (!dxl.syncWrite(&homeWriteInfo)) {
     statusReason = "initial goal write failed"; faultId = 0; return false;
   }
   homeStartedMs = homeLastTickMs = millis();
@@ -537,10 +527,10 @@ void serviceStartupHome() {
 
 bool makeFollowerValues(const int32_t *raw, int32_t *values) {
   for (uint8_t i = 0; i < LEADER_MOTOR_COUNT; ++i) {
-    if (i != GRIPPER_INDEX && (raw[i] < 0 || raw[i] > 4095)) return false;
+    if (i != GRIPPER_INDEX && !inRawRange(raw[i])) return false;
   }
   int32_t joint2 = FOLLOWER_J2_REFERENCE + LEADER_J2_SIGN * (raw[JOINT2_INDEX] - LEADER_J2_ZERO_RAW);
-  if (joint2 < 0 || joint2 > 4095) return false;
+  if (!inRawRange(joint2)) return false;
   int32_t gripperDelta = GRIP_NO_SAMPLE;
   if (gripperAvailable && gripperSampleValid) {
     int64_t delta = (int64_t)raw[GRIPPER_INDEX] - GRIPPER_REFERENCE_RAW;
@@ -582,28 +572,36 @@ void setup() {
   digitalWrite(LED_BUILTIN, latched ? LOW : HIGH);
 }
 
-void loop() {
-  static uint32_t lastOffMs = 0, lastAttemptUs = 0, lastStatusMs = 0;
-  uint32_t nowMs = millis();
-  if (!homeActive && (uint32_t)(nowMs - lastOffMs) >= TORQUE_OFF_INTERVAL_MS) {
-    lastOffMs = nowMs; torqueOffLeader();
-  }
+void pollUsbStop() {
   uint8_t usbBudget = 16;
   while (usbBudget-- > 0 && DEBUG_SERIAL.available()) {
     if (DEBUG_SERIAL.read() == '!') latchLeader("USB stop: transmission latched OFF", 0);
   }
-  if (DEBUG_SERIAL && (uint32_t)(nowMs - lastStatusMs) >= 1000) {
-    lastStatusMs = nowMs;
-    DEBUG_SERIAL.print("[LEADER] sent="); DEBUG_SERIAL.print(sentFrames);
-    DEBUG_SERIAL.print(" rejected="); DEBUG_SERIAL.print(rejectedFrames);
-    DEBUG_SERIAL.print(" busy="); DEBUG_SERIAL.print(busyFrames);
-    DEBUG_SERIAL.print(" ID="); DEBUG_SERIAL.print(faultId);
-    DEBUG_SERIAL.print(" grip="); DEBUG_SERIAL.print(gripperAvailable ? "enabled" : "absent/disabled");
-    DEBUG_SERIAL.print(" build="); DEBUG_SERIAL.print(FIRMWARE_LABEL);
-    DEBUG_SERIAL.print(" "); DEBUG_SERIAL.println(statusReason);
-    if (latched) printIoFailure(faultIoFailure);
-    else printIoFailure(lastIoFailure);
+}
+
+void printStatus(uint32_t nowMs) {
+  static uint32_t lastStatusMs = 0;
+  if (!DEBUG_SERIAL || (uint32_t)(nowMs - lastStatusMs) < 1000) return;
+  lastStatusMs = nowMs;
+  DEBUG_SERIAL.print("[LEADER] sent="); DEBUG_SERIAL.print(sentFrames);
+  DEBUG_SERIAL.print(" rejected="); DEBUG_SERIAL.print(rejectedFrames);
+  DEBUG_SERIAL.print(" busy="); DEBUG_SERIAL.print(busyFrames);
+  DEBUG_SERIAL.print(" ID="); DEBUG_SERIAL.print(faultId);
+  DEBUG_SERIAL.print(" grip="); DEBUG_SERIAL.print(gripperAvailable ? "enabled" : "absent/disabled");
+  DEBUG_SERIAL.print(" build="); DEBUG_SERIAL.print(FIRMWARE_LABEL);
+  DEBUG_SERIAL.print(" "); DEBUG_SERIAL.println(statusReason);
+  if (latched) printIoFailure(faultIoFailure);
+  else printIoFailure(lastIoFailure);
+}
+
+void loop() {
+  static uint32_t lastOffMs = 0, lastAttemptUs = 0;
+  uint32_t nowMs = millis();
+  if (!homeActive && (uint32_t)(nowMs - lastOffMs) >= TORQUE_OFF_INTERVAL_MS) {
+    lastOffMs = nowMs; torqueOffLeader();
   }
+  pollUsbStop();
+  printStatus(nowMs);
   if (homeActive) { serviceStartupHome(); return; }
   if (!ready || latched) return;
   uint32_t nowUs = micros();
@@ -611,7 +609,7 @@ void loop() {
   lastAttemptUs = nowUs;
   int32_t raw[LEADER_MOTOR_COUNT] = {};
   int32_t values[LOGICAL_JOINT_COUNT] = {};
-  if (!readFreshPose(raw)) { ++rejectedFrames; digitalWrite(LED_BUILTIN, LOW); return; }
+  if (!readPoseWithTorque(raw, 0)) { ++rejectedFrames; digitalWrite(LED_BUILTIN, LOW); return; }
   if (!makeFollowerValues(raw, values)) {
     ++rejectedFrames; statusReason = "position/gripper delta invalid; not sending";
     digitalWrite(LED_BUILTIN, LOW); return;

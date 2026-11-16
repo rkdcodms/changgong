@@ -41,9 +41,8 @@ constexpr uint8_t ARM_IDS[ARM_MOTOR_COUNT] = {1, 2, 3, 4, 5, 6};
 constexpr uint8_t PAIR_INDEX_2 = 1;
 constexpr uint8_t PAIR_INDEX_6 = 5;
 constexpr uint8_t GRIP_INDEX = 4;
+constexpr uint8_t PAIR_IDS[2] = {2, 6};
 constexpr int32_t GRIP_NO_SAMPLE = INT32_MIN; // fifth field only: keep the last gripper target
-constexpr uint8_t GRIPPER_IDS[] = {5};
-constexpr uint8_t GRIPPER_NUM = sizeof(GRIPPER_IDS) / sizeof(GRIPPER_IDS[0]);
 constexpr uint16_t XL430_MODEL_NUMBER = 1060; // XL430-W250
 
 // Software zero correction. These are the actual readings at the SAME pose.
@@ -127,7 +126,6 @@ constexpr int MAX_TURN_SPEED = 150;
 constexpr uint32_t PPM_TIMEOUT_US = 150000;
 
 static_assert(ARM_MOTOR_COUNT < LEFT_ID, "Arm and wheel IDs must be distinct");
-static_assert(GRIPPER_NUM == 1, "This build has one gripper, ID 5");
 static_assert(PAIR_STEP_RAW > 0, "Pair slew rate must be positive");
 static_assert(ARM_HOME_TIMEOUT_MS > ARM_HOME_MIN_MS && ARM_HOME_STABLE_SAMPLES > 0,
               "Invalid initial-pose timing");
@@ -137,7 +135,6 @@ static_assert(GRIP_SPAN > GRIP_OPEN_MARGIN + GRIP_CLOSE_MARGIN,
 // =========================== STATE ==================================
 bool armReady = false, wheelsReady = false, systemFault = false;
 bool gripperAvailable = true, gripperReady = false;
-const char *gripperDisabledReason = "none";
 bool configurationIO = true;
 const char *setupStage = "motor discovery";
 uint8_t setupMotor = 0;
@@ -184,8 +181,6 @@ struct IoFailure {
 };
 IoFailure lastIoFailure = {}, faultIoFailure = {};
 
-struct __attribute__((packed)) GoalData { int32_t position; };
-GoalData swData[ARM_MOTOR_COUNT] = {};
 DYNAMIXEL::InfoSyncWriteInst_t swInfo = {};
 DYNAMIXEL::XELInfoSyncWrite_t swXels[ARM_MOTOR_COUNT] = {};
 
@@ -280,6 +275,22 @@ void setPairGoals(int32_t q) {
   targetGoal[PAIR_INDEX_2] = PAIR_ZERO_2 + q;
   targetGoal[PAIR_INDEX_6] = PAIR_ZERO_6 + q;
 }
+// Signed zero-relative disagreement q2 - q6 between the two pair motors.
+int32_t pairMismatch(int32_t pos2, int32_t pos6) {
+  return (pos2 - PAIR_ZERO_2) - (pos6 - PAIR_ZERO_6);
+}
+// Shared joint coordinate q of the pair, clipped to the pair bounds.
+int32_t pairMeanQ(int32_t pos2, int32_t pos6) {
+  return clamp32(((pos2 - PAIR_ZERO_2) + (pos6 - PAIR_ZERO_6)) / 2, qMin, qMax);
+}
+
+// Torque OFF can report multiple turns; OP_POSITION torque ON resets
+// to one turn, plus the existing Homing Offset.
+int32_t singleTurnPosition(int32_t position, int32_t offset) {
+  int64_t turn = ((int64_t)position - offset) % 4096;
+  if (turn < 0) turn += 4096;
+  return (int32_t)(turn + offset);
+}
 
 bool readItem(uint8_t item, uint8_t id, int32_t &value) {
   uint32_t timeout = configurationIO ? CONFIG_TIMEOUT_MS : IO_TIMEOUT_MS;
@@ -356,23 +367,31 @@ bool disablePairStartupTorque(uint8_t id) {
   return true;
 }
 
+// One Sync Write packet carrying the SAME data bytes to every listed ID.
+constexpr uint8_t SYNC_WRITE_MAX_IDS = 8;
+bool syncWriteSame(uint16_t addr, uint8_t length, const uint8_t *ids, uint8_t count,
+                   const void *data) {
+  if (count > SYNC_WRITE_MAX_IDS) return false;
+  DYNAMIXEL::InfoSyncWriteInst_t info = {};
+  DYNAMIXEL::XELInfoSyncWrite_t xels[SYNC_WRITE_MAX_IDS] = {};
+  info.addr = addr;
+  info.addr_length = length;
+  info.p_xels = xels;
+  info.xel_count = count;
+  info.is_info_changed = true;
+  for (uint8_t i = 0; i < count; ++i) {
+    xels[i].id = ids[i];
+    xels[i].p_data = (uint8_t *)data;
+  }
+  return dxl.syncWrite(&info);
+}
+
 // Torque-OFF is sent in one packet to both XL430s AND all other listed motors.
 // Sync Write has no per-motor acknowledgement; repeat while latched/calibrating.
 void allTorqueOff() {
   const uint8_t ids[] = {1, 2, 3, 4, 5, 6, 9, 10};
   uint8_t off = 0;
-  DYNAMIXEL::InfoSyncWriteInst_t info = {};
-  DYNAMIXEL::XELInfoSyncWrite_t xels[8] = {};
-  info.addr = 64;
-  info.addr_length = 1;
-  info.p_xels = xels;
-  info.xel_count = 8;
-  info.is_info_changed = true;
-  for (uint8_t i = 0; i < 8; ++i) {
-    xels[i].id = ids[i];
-    xels[i].p_data = &off;
-  }
-  dxl.syncWrite(&info);
+  syncWriteSame(64, 1, ids, sizeof(ids), &off);
 }
 
 void tripFault(const char *reason, uint8_t id) {
@@ -397,6 +416,15 @@ void tripFault(const char *reason, uint8_t id) {
   }
 }
 
+// Consume at most 16 USB bytes; stop reading at the first '!'.
+bool usbStopRequested() {
+  uint8_t budget = 16;
+  while (budget-- > 0 && DEBUG_SERIAL.available()) {
+    if (DEBUG_SERIAL.read() == '!') return true;
+  }
+  return false;
+}
+
 bool waitForMotor(uint8_t id) {
   // Start configuring as soon as this motor answers instead of always waiting
   // 300 ms. Never energize an arm whose power-up/discovery has not completed.
@@ -404,10 +432,7 @@ bool waitForMotor(uint8_t id) {
     captureIoFailure("ping", id, MODEL_NUMBER, 0);
     allTorqueOff();
     if ((uint32_t)(millis() - dxlPowerOnMs) >= DXL_READY_TIMEOUT_MS) return false;
-    uint8_t usbBudget = 16;
-    while (usbBudget-- > 0 && DEBUG_SERIAL.available()) {
-      if (DEBUG_SERIAL.read() == '!') { tripFault("USB stop during motor discovery", id); return false; }
-    }
+    if (usbStopRequested()) { tripFault("USB stop during motor discovery", id); return false; }
     delay(1);
   }
   lastIoFailure.valid = false;
@@ -457,34 +482,26 @@ bool commandWheels(int left, int right) {
   return l && r;
 }
 bool setupWheel(uint8_t id) {
-  if (!dxl.ping(id)) return false;
-  if (!ensureStatusReturnLevel(id)) return false;
-  if (!writeItem(TORQUE_ENABLE, id, 0)) return false;
-  if (!writeItem(BUS_WATCHDOG, id, 0)) return false;
-  if (!setIfChanged(OPERATING_MODE, id, OP_VELOCITY)) return false;
-  if (!setIfChanged(DRIVE_MODE, id, 0)) return false;
-  if (!writeItem(PROFILE_ACCELERATION, id, 0)) return false;
-  if (!writeItem(GOAL_VELOCITY, id, 0)) return false;
-  if (!writeItem(TORQUE_ENABLE, id, 1)) return false;
-  return writeItem(BUS_WATCHDOG, id, 10); // 200 ms bus watchdog
+  return dxl.ping(id) &&
+         ensureStatusReturnLevel(id) &&
+         writeItem(TORQUE_ENABLE, id, 0) &&
+         writeItem(BUS_WATCHDOG, id, 0) &&
+         setIfChanged(OPERATING_MODE, id, OP_VELOCITY) &&
+         setIfChanged(DRIVE_MODE, id, 0) &&
+         writeItem(PROFILE_ACCELERATION, id, 0) &&
+         writeItem(GOAL_VELOCITY, id, 0) &&
+         writeItem(TORQUE_ENABLE, id, 1) &&
+         writeItem(BUS_WATCHDOG, id, 10); // 200 ms bus watchdog
 }
 
 void stopOnlyWheels() {
   // No model lookup or reply is required when a wheel is absent. Do not
   // deactivate the arm merely because wheels 9/10 are not connected.
+  const uint8_t ids[] = {LEFT_ID, RIGHT_ID};
   int32_t zero = 0;
   uint8_t off = 0;
-  DYNAMIXEL::InfoSyncWriteInst_t info = {};
-  DYNAMIXEL::XELInfoSyncWrite_t xels[2] = {};
-  info.addr = 104; info.addr_length = 4; info.p_xels = xels;
-  info.xel_count = 2; info.is_info_changed = true;
-  xels[0].id = LEFT_ID; xels[1].id = RIGHT_ID;
-  xels[0].p_data = xels[1].p_data = (uint8_t *)&zero;
-  dxl.syncWrite(&info);
-  info.addr = 64; info.addr_length = 1; info.is_info_changed = true;
-  info.packet.is_completed = false;
-  xels[0].p_data = xels[1].p_data = &off;
-  dxl.syncWrite(&info);
+  syncWriteSame(104, 4, ids, sizeof(ids), &zero); // Goal Velocity = 0
+  syncWriteSame(64, 1, ids, sizeof(ids), &off);   // then Torque OFF
 }
 void driveControl() {
   uint16_t chTurn, chFwd;
@@ -533,7 +550,7 @@ void prepareArmSyncWrite() {
     if (!armMotorEnabled(i)) continue;
     uint8_t slot = swInfo.xel_count++;
     swXels[slot].id = ARM_IDS[i];
-    swXels[slot].p_data = (uint8_t *)&swData[i].position;
+    swXels[slot].p_data = (uint8_t *)&targetGoal[i]; // read at each syncWrite
   }
 }
 
@@ -542,7 +559,6 @@ void disableGripper(const char *reason) {
   // Do not use allTorqueOff() here, and never automatically re-enable ID5.
   if (!gripperAvailable) return;
   gripperAvailable = gripperReady = false;
-  gripperDisabledReason = reason;
   if (DEBUG_SERIAL) {
     DEBUG_SERIAL.print("[GRIP DISABLED] ID=5 reason="); DEBUG_SERIAL.println(reason);
     if (lastIoFailure.valid) {
@@ -564,8 +580,7 @@ void disableGripper(const char *reason) {
   setupCheckFailed = false;
 }
 bool sendArmGoals() {
-  for (uint8_t i = 0; i < ARM_MOTOR_COUNT; ++i) swData[i].position = targetGoal[i];
-  swInfo.is_info_changed = true;
+  swInfo.is_info_changed = true; // rebuild the packet from targetGoal now
   if (!dxl.syncWrite(&swInfo)) return false;
   ++armWriteCount;
   return true;
@@ -602,10 +617,7 @@ bool homeGripper() {
   uint8_t still = 0;
   bool found = false;
   while ((uint32_t)(millis() - started) < 4000) {
-    uint8_t usbBudget = 16;
-    while (usbBudget-- > 0 && DEBUG_SERIAL.available()) {
-      if (DEBUG_SERIAL.read() == '!') { tripFault("USB stop during gripper homing", 5); return false; }
-    }
+    if (usbStopRequested()) { tripFault("USB stop during gripper homing", 5); return false; }
     // Arm joints are already at their initial pose. Keep safety feedback and
     // the pair's watchdog alive while the gripper finds its closed position.
     servicePairSafety();
@@ -677,9 +689,8 @@ bool configureArmMotor(uint8_t i) {
   if (!writeItem(PROFILE_VELOCITY, id, ARM_PROFILE_VELOCITY) ||
       !writeItem(PROFILE_ACCELERATION, id, ARM_PROFILE_ACCELERATION)) return false;
   if (paired) {
-    int32_t offset, shutdown, pwmLimit, secondary;
+    int32_t shutdown, pwmLimit, secondary;
     setupStage = "paired EEPROM/status setup";
-    if (!readItem(HOMING_OFFSET, id, offset)) return false;
     if (!readItem(SECONDARY_ID, id, secondary)) return false;
     if ((secondary & 0xFF) != 255)
       return rejectSetup("paired secondary ID must be unused", id, secondary & 0xFF, 255, 255);
@@ -718,17 +729,23 @@ bool configureArmMotor(uint8_t i) {
       return rejectSetup("initial target outside effective range", id, initial, jointMinimum(i), jointMaximum(i));
     if (!readItem(PRESENT_POSITION, id, position) ||
         !readItem(HOMING_OFFSET, id, offset)) return false;
-    // Torque OFF can report multiple turns; OP_POSITION torque ON resets
-    // to one turn, plus the existing Homing Offset.
     if (offset < -1024 || offset > 1024) offset = 0; // ignored by firmware in OP_POSITION
-    int64_t singleTurn = ((int64_t)position - offset) % 4096;
-    if (singleTurn < 0) singleTurn += 4096;
-    position = (int32_t)(singleTurn + offset);
+    position = singleTurnPosition(position, offset);
     if (position < jointMinimum(i) || position > jointMaximum(i))
       return rejectSetup("starting position outside effective range", id, position, jointMinimum(i), jointMaximum(i));
     targetGoal[i] = position; // preload present pose before slow initial move
   }
 
+  return true;
+}
+
+// Startup pair check on the preloaded targets, then hold both at one shared q.
+bool alignPairTargets(const char *stage) {
+  int32_t mismatch = pairMismatch(targetGoal[PAIR_INDEX_2], targetGoal[PAIR_INDEX_6]);
+  if (abs32(mismatch) > PAIR_STARTUP_SYNC_RAW)
+    return rejectSetup(stage, 6, mismatch, -PAIR_STARTUP_SYNC_RAW, PAIR_STARTUP_SYNC_RAW);
+  qCommand = qTarget = pairMeanQ(targetGoal[PAIR_INDEX_2], targetGoal[PAIR_INDEX_6]);
+  setPairGoals(qCommand);
   return true;
 }
 
@@ -743,7 +760,7 @@ bool setupArm() {
       disableGripper(setupStage);
     }
   }
-  for (uint8_t id = 2; id <= 6; id += 4) {
+  for (uint8_t id : PAIR_IDS) {
     int32_t model;
     setupStage = "paired model read"; setupMotor = id;
     if (!readItem(MODEL_NUMBER, id, model)) return false;
@@ -758,12 +775,7 @@ bool setupArm() {
       disableGripper(setupStage);
     }
   }
-  int32_t q2 = targetGoal[PAIR_INDEX_2] - PAIR_ZERO_2;
-  int32_t q6 = targetGoal[PAIR_INDEX_6] - PAIR_ZERO_6;
-  if (abs32(q2 - q6) > PAIR_STARTUP_SYNC_RAW)
-    return rejectSetup("paired starting alignment", 6, q2 - q6, -PAIR_STARTUP_SYNC_RAW, PAIR_STARTUP_SYNC_RAW);
-  qCommand = qTarget = clamp32((q2 + q6) / 2, qMin, qMax);
-  setPairGoals(qCommand);
+  if (!alignPairTargets("paired starting alignment")) return false;
   if (gripperAvailable && !configureGripper()) disableGripper(setupStage);
   // Refresh positions after configuration. Hold the gripper here; contact
   // homing is deferred until AFTER the arm has moved to its initial pose.
@@ -785,19 +797,12 @@ bool setupArm() {
     if (!readItem(PRESENT_POSITION, ARM_IDS[i], position) ||
         !readItem(HOMING_OFFSET, ARM_IDS[i], offset)) return false;
     if (offset < -1024 || offset > 1024) offset = 0;
-    int64_t oneTurn = ((int64_t)position - offset) % 4096;
-    if (oneTurn < 0) oneTurn += 4096;
-    position = (int32_t)(oneTurn + offset);
+    position = singleTurnPosition(position, offset);
     if (position < jointMinimum(i) || position > jointMaximum(i))
       return rejectSetup("pre-enable position outside effective range", ARM_IDS[i], position, jointMinimum(i), jointMaximum(i));
     targetGoal[i] = position;
   }
-  q2 = targetGoal[PAIR_INDEX_2] - PAIR_ZERO_2;
-  q6 = targetGoal[PAIR_INDEX_6] - PAIR_ZERO_6;
-  if (abs32(q2 - q6) > PAIR_STARTUP_SYNC_RAW)
-    return rejectSetup("paired pre-enable alignment", 6, q2 - q6, -PAIR_STARTUP_SYNC_RAW, PAIR_STARTUP_SYNC_RAW);
-  qCommand = qTarget = clamp32((q2 + q6) / 2, qMin, qMax);
-  setPairGoals(qCommand);
+  if (!alignPairTargets("paired pre-enable alignment")) return false;
   prepareArmSyncWrite();
   // A broadcast alone cannot confirm that each motor received its hold goal.
   // Preload with acknowledged unicast writes before the shared torque-ON.
@@ -813,16 +818,11 @@ bool setupArm() {
 
   uint8_t on = 1;
   setupStage = "arm torque ON packet";
-  DYNAMIXEL::InfoSyncWriteInst_t info = {};
-  DYNAMIXEL::XELInfoSyncWrite_t xels[ARM_MOTOR_COUNT] = {};
-  info.addr = 64; info.addr_length = 1; info.p_xels = xels;
-  info.xel_count = 0; info.is_info_changed = true;
-  for (uint8_t i = 0; i < ARM_MOTOR_COUNT; ++i) {
-    if (!armMotorEnabled(i)) continue;
-    uint8_t slot = info.xel_count++;
-    xels[slot].id = ARM_IDS[i]; xels[slot].p_data = &on;
-  }
-  if (!dxl.syncWrite(&info)) return false;
+  uint8_t enabledIds[ARM_MOTOR_COUNT];
+  uint8_t enabledCount = 0;
+  for (uint8_t i = 0; i < ARM_MOTOR_COUNT; ++i)
+    if (armMotorEnabled(i)) enabledIds[enabledCount++] = ARM_IDS[i];
+  if (!syncWriteSame(64, 1, enabledIds, enabledCount, &on)) return false;
   for (uint8_t i = 0; i < ARM_MOTOR_COUNT; ++i) {
     if (!armMotorEnabled(i)) continue;
     int32_t torque;
@@ -872,9 +872,7 @@ uint8_t instantaneousPairFault() {
     return 1;
   if (pairSample.pos2 < PAIR_2_MIN || pairSample.pos2 > PAIR_2_MAX ||
       pairSample.pos6 < PAIR_6_MIN || pairSample.pos6 > PAIR_6_MAX) return 2;
-  int32_t mismatch = abs32((pairSample.pos2 - PAIR_ZERO_2) -
-                           (pairSample.pos6 - PAIR_ZERO_6));
-  if (mismatch > PAIR_SYNC_HARD_RAW) return 3;
+  if (abs32(pairMismatch(pairSample.pos2, pairSample.pos6)) > PAIR_SYNC_HARD_RAW) return 3;
   return 0;
 }
 
@@ -903,7 +901,7 @@ void servicePairSafety() {
               (fault == 2 ? "pair position limit" : "pair alignment hard limit"), 2);
     return;
   }
-  int32_t mismatch = abs32((sample.pos2 - PAIR_ZERO_2) - (sample.pos6 - PAIR_ZERO_6));
+  int32_t mismatch = abs32(pairMismatch(sample.pos2, sample.pos6));
   int32_t following = max32(abs32(sample.pos2 - (PAIR_ZERO_2 + qCommand)),
                             abs32(sample.pos6 - (PAIR_ZERO_6 + qCommand)));
   int32_t peakLoad = max32(abs32(sample.load2), abs32(sample.load6));
@@ -996,12 +994,10 @@ bool moveArmToInitialPose() {
   }
   int32_t start[ARM_MOTOR_COUNT] = {};
   if (!readArmInitialPose(start)) { tripFault("initial pose read failed", 0); return false; }
-  int32_t q2 = start[PAIR_INDEX_2] - PAIR_ZERO_2;
-  int32_t q6 = start[PAIR_INDEX_6] - PAIR_ZERO_6;
-  if (abs32(q2 - q6) > PAIR_STARTUP_SYNC_RAW) {
+  if (abs32(pairMismatch(start[PAIR_INDEX_2], start[PAIR_INDEX_6])) > PAIR_STARTUP_SYNC_RAW) {
     tripFault("initial pair alignment", 2); return false;
   }
-  int32_t startQ = clamp32((q2 + q6) / 2, qMin, qMax);
+  int32_t startQ = pairMeanQ(start[PAIR_INDEX_2], start[PAIR_INDEX_6]);
   qCommand = qTarget = startQ;
   for (uint8_t i = 0; i < ARM_MOTOR_COUNT; ++i)
     if (i != GRIP_INDEX) targetGoal[i] = start[i];
@@ -1030,10 +1026,7 @@ bool moveArmToInitialPose() {
   bool lagTiming = false;
   uint8_t stable = 0;
   while ((uint32_t)(millis() - started) < ARM_HOME_TIMEOUT_MS) {
-    uint8_t usbBudget = 16;
-    while (usbBudget-- > 0 && DEBUG_SERIAL.available()) {
-      if (DEBUG_SERIAL.read() == '!') { tripFault("USB stop during initial move", 0); return false; }
-    }
+    if (usbStopRequested()) { tripFault("USB stop during initial move", 0); return false; }
     servicePairSafety();
     serviceOtherArmSafety();
     if (systemFault) return false;
@@ -1125,17 +1118,11 @@ void applyFollowProfile() {
   // X-series RAM: acceleration (108, four bytes), then velocity (112, four bytes).
   // One broadcast sets the two coupled motors' profiles at the same time.
   int32_t profile[2] = {FOLLOW_PROFILE_ACCELERATION, FOLLOW_PROFILE_VELOCITY};
-  DYNAMIXEL::InfoSyncWriteInst_t info = {};
-  DYNAMIXEL::XELInfoSyncWrite_t xels[ARM_MOTOR_COUNT] = {};
-  info.addr = 108; info.addr_length = sizeof(profile); info.p_xels = xels;
-  info.is_info_changed = true;
-  for (uint8_t i = 0; i < ARM_MOTOR_COUNT; ++i) {
-    if (i == GRIP_INDEX) continue;
-    uint8_t slot = info.xel_count++;
-    xels[slot].id = ARM_IDS[i];
-    xels[slot].p_data = (uint8_t *)profile;
-  }
-  if (dxl.syncWrite(&info)) pairFollowStep = PAIR_FOLLOW_STEP_RAW;
+  uint8_t ids[ARM_MOTOR_COUNT];
+  uint8_t count = 0;
+  for (uint8_t i = 0; i < ARM_MOTOR_COUNT; ++i)
+    if (i != GRIP_INDEX) ids[count++] = ARM_IDS[i];
+  if (syncWriteSame(108, sizeof(profile), ids, count, profile)) pairFollowStep = PAIR_FOLLOW_STEP_RAW;
   else if (DEBUG_SERIAL) DEBUG_SERIAL.println("[ARM] Follow profile TX failed; retaining initial step limit.");
 }
 
@@ -1187,10 +1174,8 @@ bool holdArmAtPresent() {
   if (!pairSampleOK) return false;
   // A brief link dropout stops the trajectory at the measured position while
   // retaining holding torque. A hardware fault instead latches torque OFF.
-  int32_t q2 = pairSample.pos2 - PAIR_ZERO_2;
-  int32_t q6 = pairSample.pos6 - PAIR_ZERO_6;
-  if (abs32(q2 - q6) > PAIR_SYNC_TRIP_RAW) return false;
-  qCommand = qTarget = clamp32((q2 + q6) / 2, qMin, qMax);
+  if (abs32(pairMismatch(pairSample.pos2, pairSample.pos6)) > PAIR_SYNC_TRIP_RAW) return false;
+  qCommand = qTarget = pairMeanQ(pairSample.pos2, pairSample.pos6);
   setPairGoals(qCommand);
   for (uint8_t i = 0; i < LEADER_JOINT_COUNT; ++i) {
     if (i == PAIR_INDEX_2) continue;
@@ -1237,8 +1222,7 @@ void calibrationMonitor() {
   if ((uint32_t)(now - lastOff) >= 250) { lastOff = now; allTorqueOff(); }
   if (!DEBUG_SERIAL || (uint32_t)(now - lastPrint) < 500) return;
   lastPrint = now;
-  for (uint8_t i = 0; i < 2; ++i) {
-    uint8_t id = i == 0 ? 2 : 6;
+  for (uint8_t id : PAIR_IDS) {
     int32_t raw, offset, mode, torque;
     if (!readItem(PRESENT_POSITION, id, raw) ||
         !readItem(HOMING_OFFSET, id, offset) ||
@@ -1247,11 +1231,10 @@ void calibrationMonitor() {
       DEBUG_SERIAL.print("[CAL] no valid read ID="); DEBUG_SERIAL.println(id);
       continue;
     }
-    int64_t absolute = ((int64_t)raw - offset) % 4096;
-    if (absolute < 0) absolute += 4096;
+    // The raw offset is used here (no +-1024 filter) and printed as read.
     DEBUG_SERIAL.print("[CAL] ID="); DEBUG_SERIAL.print(id);
     DEBUG_SERIAL.print(" pos="); DEBUG_SERIAL.print(raw);
-    DEBUG_SERIAL.print(" single="); DEBUG_SERIAL.print((int32_t)absolute + offset);
+    DEBUG_SERIAL.print(" single="); DEBUG_SERIAL.print(singleTurnPosition(raw, offset));
     DEBUG_SERIAL.print(" offset="); DEBUG_SERIAL.print(offset);
     DEBUG_SERIAL.print(" drive="); DEBUG_SERIAL.print(mode);
     DEBUG_SERIAL.print(" torque="); DEBUG_SERIAL.println(torque);
@@ -1273,8 +1256,7 @@ void setup() {
   if (CALIBRATION_MODE) {
     // Make calibration readings use the same coordinates as RUN mode:
     // ID2 normal, ID6 Reverse. Change settings only with torque confirmed OFF.
-    for (uint8_t i = 0; i < 2; ++i) {
-      uint8_t id = i == 0 ? 2 : 6;
+    for (uint8_t id : PAIR_IDS) {
       if (!waitForMotor(id) || !ensureStatusReturnLevel(id) || dxl.getModelNumber(id) != XL430_MODEL_NUMBER ||
           !writeItem(TORQUE_ENABLE, id, 0) ||
           !writeItem(BUS_WATCHDOG, id, 0) ||
@@ -1345,10 +1327,7 @@ void loop() {
   }
   if (CALIBRATION_MODE) { calibrationMonitor(); return; }
   // A USB '!' is a latched software stop, not a physical emergency stop.
-  uint8_t usbBudget = 16;
-  while (usbBudget-- > 0 && DEBUG_SERIAL.available()) {
-    if (DEBUG_SERIAL.read() == '!') { tripFault("USB stop", 0); return; }
-  }
+  if (usbStopRequested()) { tripFault("USB stop", 0); return; }
   static uint32_t lastDrive = 0;
   if (wheelsReady && (uint32_t)(millis() - lastDrive) >= 20) {
     lastDrive = millis(); driveControl();

@@ -6,6 +6,10 @@ from vision_control import NAMES, VisionStopController, valid_detection
 HORSE_CLASS = 7  # TrojanHorse in the detector mapping
 RELEASE_CONFIRM_SECONDS = 1.0
 APPROACH_CLEAR_SECONDS = 0.8
+# 최종 룰북(Final revised) 27쪽: 랩 완주는 0점. 마지막 목표에서는 석상을 들어 올려도
+# 출발 명령(R)을 보내지 않아 그 자리에 계속 정지한다 (Mega는 R을 받기 전까지 제동 유지).
+# 이탈·리셋 위험이 없고 오디세우스를 옮기기도 쉽다. False면 예전처럼 계속 주행한다.
+HOLD_AFTER_LAST = True
 
 
 def _area(box):
@@ -27,13 +31,18 @@ class OrderedStopController(VisionStopController):
     confidence threshold. All targets require one continuous second of fresh
     frames satisfying their release condition. For TrojanHorse every horse
     must be out of detection. Only the Mega's resume confirmation advances the
-    sequence. After the last release the camera and line follower stay active.
+    sequence. With hold_after_last the robot never resumes from the last target
+    (heartbeats continue, so the Mega stays braked); without it the camera and
+    line follower stay active after the last release.
     """
     heartbeat_command = 'Q'
 
-    def __init__(self, session, targets, confidence=.55, min_frames=3, min_span=.1):
+    def __init__(self, session, targets, confidence=.55, min_frames=3, min_span=.1,
+                 hold_after_last=HOLD_AFTER_LAST):
         super().__init__(session, confidence=confidence, min_frames=min_frames,
                          min_span=min_span, restart_cooldown=0.)
+        self.hold_after_last = bool(hold_after_last)
+        self.final_hold = False
         self.targets = tuple(targets)
         if not 1 <= len(self.targets) <= 8 or any(
                 type(cid) is not int or cid not in NAMES for cid in self.targets):
@@ -132,6 +141,13 @@ class OrderedStopController(VisionStopController):
                 self.held_box = tuple(self.streaks[self.pending['class_id']]['bbox'])
             if self.held_box is None or self.pending:
                 return commands
+            if self.hold_after_last and self.target_index == len(self.targets) - 1:
+                # Last target: never send R. Record once that its statue has been lifted.
+                if self.release_ready and not self.final_hold:
+                    self.final_hold = True
+                    self._event('final_hold', now, event_id=self.last_ack['event'],
+                                class_name=self.last_ack['class_name'], total=len(self.targets))
+                return commands
             if not self.release_ready and self.release_started_at is None:
                 return commands
             ack = self.last_ack
@@ -182,5 +198,6 @@ class OrderedStopController(VisionStopController):
             state = super().status(now)
             state.update(target_sequence=[NAMES[cid] for cid in self.targets],
                          target_index=self.target_index,
-                         approach_requested=self.last_approach_command is True)
+                         approach_requested=self.last_approach_command is True,
+                         hold_after_last=self.hold_after_last, final_hold=self.final_hold)
             return state

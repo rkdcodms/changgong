@@ -42,8 +42,8 @@ class Mega:
 
 
 class Bench:
-    def __init__(self, targets=(5, 2)):
-        self.c = OrderedStopController(77, targets)
+    def __init__(self, targets=(5, 2), **options):
+        self.c = OrderedStopController(77, targets, **options)
         self.c.set_model_ready(True, 0)
         self.c.set_serial_connected(True, 0)
         self.m, self.t, self.sent = Mega(), 0., []
@@ -108,8 +108,34 @@ class OrderedStopTests(unittest.TestCase):
         b.run(12, lambda t: [box(5)] if t < 6 else [])
         self.assertEqual(b.c.fatal, 'RELEASE_ACK_TIMEOUT')
 
-    def test_full_sequence_then_keeps_driving(self):
+    def test_full_sequence_then_holds_at_last_target(self):
+        # Final rulebook p27: laps score 0, so the robot stays at the last statue.
         b = Bench(targets=(5, 2))
+        b.run(4, lambda t: [box(5)]); b.run(3, lambda t: [])
+        b.run(4, lambda t: [box(2)]); b.run(3, lambda t: [])
+        self.assertEqual(len(b.times('S')), 2)
+        self.assertEqual(len(b.times('R')), 1, 'only the first target is released')
+        self.assertEqual(b.c.target_index, 1)
+        self.assertTrue(b.c.final_hold)
+        self.assertEqual(b.m.mode, 1)
+        b.run(20, lambda t: [box(5)] if t % 4 < 2 else [])   # long wait, other statues pass
+        self.assertEqual(b.m.mode, 1, 'still stopped; heartbeats keep the Mega out of FAULT')
+        self.assertIsNone(b.c.fatal)
+        self.assertEqual(len(b.times('R')), 1)
+        self.assertGreater(b.times('Q')[-1], b.t - .3)
+        self.assertTrue(b.c.status(b.t)['final_hold'])
+
+    def test_last_target_hold_waits_for_lift_before_marking_done(self):
+        b = Bench(targets=(5,))
+        b.run(8, lambda t: [box(5)])
+        self.assertEqual(b.m.mode, 1)
+        self.assertFalse(b.c.final_hold, 'statue still there')
+        b.run(3, lambda t: [])
+        self.assertTrue(b.c.final_hold)
+        self.assertEqual(b.times('R'), [])
+
+    def test_full_sequence_then_keeps_driving_when_hold_disabled(self):
+        b = Bench(targets=(5, 2), hold_after_last=False)
         b.run(4, lambda t: [box(5)]); b.run(3, lambda t: [])
         b.run(4, lambda t: [box(2)]); b.run(3, lambda t: [])
         self.assertEqual(b.c.target_index, 2)
@@ -117,11 +143,27 @@ class OrderedStopTests(unittest.TestCase):
         b.run(4, lambda t: [box(5)])
         self.assertEqual(len(b.times('S')), 2, 'after the last target no further stops')
         self.assertEqual(b.m.mode, 0)
+        self.assertFalse(b.c.final_hold)
 
     def test_target_list_validation(self):
         for bad in ((), (8,), tuple(range(8)) + (0,), ('Scylla',)):
             with self.assertRaises(ValueError):
                 OrderedStopController(1, bad)
+
+
+class DefaultOrderTests(unittest.TestCase):
+    def test_default_objects_follow_final_rulebook_order(self):
+        # Final rulebook p9: TrojanHorse, Cyclops, Laestrygonians, Calypso, Scylla,
+        # Sirens, Cattle of Helios, Poseidon's Wrath (model class names below).
+        import importlib.util
+        path = Path(__file__).resolve().parents[1] / 'scripts' / 'robot_run_for robocon.py'
+        sys.path.insert(0, str(path.parent))
+        spec = importlib.util.spec_from_file_location('robot_run_for_robocon', path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        by_name = {name: cid for cid, name in module.NAMES.items()}
+        self.assertEqual([by_name[n] for n in module.TARGET_OBJECTS], [7, 2, 3, 0, 5, 6, 1, 4])
+        OrderedStopController(1, [by_name[n] for n in module.TARGET_OBJECTS])
 
 
 if __name__ == '__main__':

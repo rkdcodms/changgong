@@ -1,9 +1,10 @@
 """Robocon 순서 주행. autorobot 폴더에서 실행 예시:
 
-  python3 "scripts/robot_run_for robocon.py" --start --objects Calypso Cattle Siren
+  python3 "scripts/robot_run_for robocon.py" --start
 
---objects를 생략하면 아래 TARGET_OBJECTS를 사용합니다.
-Mega에는 이 버전의 arduino/vision_stop/vision_stop.ino를 업로드해야 합니다.
+--objects를 생략하면 아래 TARGET_OBJECTS(최종 룰북의 고정 순서 8개)를 사용합니다.
+다른 순서로 시험할 때만 --objects Calypso Cattle Siren 처럼 넣습니다.
+Mega에는 arduino/trace_stop/trace_stop.ino를 업로드해야 합니다.
 """
 import sys
 
@@ -13,8 +14,11 @@ sys.path.insert(0, str(ROOT / 'jetson'))
 from vision_control import NAMES
 
 
-# 경기 순서대로 동상 이름을 1~8개 입력하세요. 같은 이름을 반복해도 됩니다.
-TARGET_OBJECTS = ['Calypso', 'Cattle', 'Cyclopes']
+# 최종 룰북(Final revised) 9쪽: 시련 순서는 항상 고정, 위치만 매 경기 무작위.
+# 트로이 목마 → 키클롭스 → 라이스트리고네스 → 칼립소 → 스킬라 → 세이렌 → 헬리오스의 소 → 포세이돈
+# 이름은 모델 클래스 이름 기준 (룰북 'Cyclops' = 모델 'Cyclopes').
+TARGET_OBJECTS = ['TrojanHorse', 'Cyclopes', 'Laestrygonians', 'Calypso',
+                  'Scylla', 'Siren', 'Cattle', 'Poseidon']
 
 
 def main(argv=None):

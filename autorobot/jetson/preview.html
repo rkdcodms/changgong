@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Jetson 석상 인식</title><style>
+*{box-sizing:border-box}body{margin:0;background:#10151b;color:#edf2f7;font-family:system-ui,-apple-system,"Segoe UI",sans-serif}main{max-width:1160px;margin:auto;padding:24px}header{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap}h1{font-size:27px;margin:0 0 6px}p{color:#aebdcc;margin:0;line-height:1.6}.badge{padding:9px 14px;border-radius:22px;background:#293544;font-size:14px}.ok{color:#89efc1}.bad{color:#ffaaa0}.warn{color:#f8db8c}.stage{margin:20px 0 14px;background:#06090d;border:1px solid #354250;border-radius:14px;position:relative;height:min(62vh,620px);min-height:270px;overflow:hidden;display:grid;place-items:center}.stage img{position:absolute;inset:0;display:block;width:100%;height:100%;max-width:100%;max-height:100%;min-width:0;min-height:0;object-fit:contain;object-position:center}.stage.stale img{opacity:.3}.notice{position:absolute;inset:0;display:grid;place-items:center;text-align:center;padding:24px;background:#1117;font-size:18px}.notice[hidden]{display:none}.controls{display:flex;gap:10px;flex-wrap:wrap}button,a.button{font:inherit;font-size:14px;color:#edf2f7;background:#263343;border:1px solid #465970;border-radius:9px;padding:10px 14px;cursor:pointer;text-decoration:none}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:18px 0}.card{background:#18212c;border:1px solid #2b3b4e;border-radius:12px;padding:16px}.label{font-size:12px;color:#a6b7cb;margin-bottom:8px}.value{font-size:18px;overflow-wrap:anywhere}.sub{font-size:13px;color:#b7c4d3;margin-top:8px;line-height:1.5}.small{font-size:13px;margin:9px 0}.alert{padding:14px;border:1px solid #95534e;border-radius:10px;background:#482c2c;margin:12px 0;overflow-wrap:anywhere}.alert[hidden]{display:none}#objects{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}.object{padding:8px 12px;background:#14372f;border:1px solid #317057;border-radius:8px;font-variant-numeric:tabular-nums}.stage:fullscreen{margin:0;border:0;border-radius:0;width:100vw;height:100vh}#details{font-variant-numeric:tabular-nums}
+</style></head><body><main>
+<header><div><h1>석상 인식 · 로봇 상태</h1><p>Jetson이 찾은 석상과 Mega의 실제 상태를 함께 확인합니다.</p><p id="view-version" class="small">화면 v3</p></div><span id="badge" class="badge">연결 중</span></header>
+<div id="alert" class="alert" hidden></div>
+<div id="stage" class="stage"><img id="video" src="/stream.mjpg" alt="석상 위치와 신뢰도가 표시되는 Jetson 영상"><div id="notice" class="notice">인식 모델과 카메라를 준비하고 있습니다.</div></div>
+<div class="controls"><button id="pause">화면 멈춤</button><button id="reconnect">다시 연결</button><button id="fullscreen">전체 화면</button><a class="button" href="/snapshot.jpg" target="_blank" rel="noopener">현재 사진 열기</a></div>
+<p class="small">화면 표시를 멈추거나 이 창을 닫아도 Jetson의 AI 제어는 계속됩니다.</p>
+<div id="objects"><span class="sub">인식 결과를 기다리고 있습니다.</span></div>
+<p id="zone" class="small"></p>
+<p id="repeat-guide" class="small" hidden>이미 정지한 동상이 계속 보이면 다시 정지하지 않습니다. 같은 동상을 다시 시험하려면 화면 밖으로 완전히 빼고 2초 이상 보이지 않게 한 뒤 다시 보여 주세요.</p>
+<p id="sequence" class="small" hidden></p>
+<div class="grid">
+<div class="card"><div class="label">AI · 카메라</div><div class="value" id="model">준비 중</div><div class="sub" id="model-detail">—</div></div>
+<div class="card"><div class="label">Mega 실제 상태</div><div class="value" id="mode">확인 중</div><div class="sub" id="reason">—</div></div>
+<div class="card"><div class="label">정지 명령 · 수신 확인</div><div class="value" id="command">요청 없음</div><div class="sub" id="ack">실제 정지 확인 전</div></div>
+<div class="card"><div class="label">제어 통신</div><div class="value" id="serial">확인 중</div><div class="sub" id="heartbeat">—</div></div>
+<div class="card"><div class="label">바닥 센서</div><div class="value" id="sensors">확인 중</div><div class="sub" id="line-alignment">선 위치를 확인하고 있습니다.</div></div>
+</div>
+<p id="details" class="small">영상 상태를 확인하고 있습니다.</p>
+<p class="small">신뢰도는 모델의 점수이며 실제 오차율이나 검증된 정확도가 아닙니다. 정지 확인은 Mega가 보고한 상태이며, 실제 바퀴 동작은 현장에서 확인해야 합니다.</p>
+</main><script>
+const $=id=>document.getElementById(id),video=$('video'),stage=$('stage'),badge=$('badge'),notice=$('notice');
+const modes={FOLLOW:'라인 주행',STOPPED:'5초 정지 중',EXIT_BAR:'정지 표식 통과',SEARCH:'라인 찾기',FAULT:'FAULT · 정지 유지',WAIT_VISION:'AI 연결 대기',UNSEEN:'응답 없음'};
+const reasons={NONE:'정지 사유 없음',WHITE_LINE:'흰색 정지 표식',VISION:'석상 인식 요청',LINK_FAULT:'제어 연결 이상',UNSEEN:'확인 전'};
+let paused=false,lastOkay=false,hadImageError=false,polling=false,lastReconnect=0,networkFailures=0,firstNetworkFailure=null,lastMode='확인 전',lastDetections=[];
+function connect(){if(!paused){video.src='/stream.mjpg?t='+Date.now();lastReconnect=Date.now();hadImageError=false;}}
+$('pause').onclick=()=>{paused=!paused;$('pause').textContent=paused?'실시간 보기':'화면 멈춤';if(paused){video.removeAttribute('src');notice.hidden=false;notice.textContent='화면 표시만 멈췄습니다. AI 제어는 계속됩니다.';badge.textContent='화면 멈춤';badge.className='badge';}else connect();};
+$('reconnect').onclick=()=>{paused=false;$('pause').textContent='화면 멈춤';connect();};
+$('fullscreen').onclick=()=>{if(document.fullscreenElement)document.exitFullscreen();else if(stage.requestFullscreen)stage.requestFullscreen();};
+video.onerror=()=>{hadImageError=true;};
+function stoppedLabel(c){return c.target_sequence?'대상 앞 정지 중':modes.STOPPED;}
+function detectionState(item,s){
+ const c=s.control||{},cid=item.class_id;
+ if(s.ok!==true||s.serial_ready!==true||s.model_ready!==true||!Number.isInteger(cid))return '현재 상태 확인 불가';
+ if(c.mega_mode==='FAULT')return '제어 오류 · 정지 유지';
+ if(c.fatal||s.fault||s.model_error)return '제어 오류 · 정지 확인 필요';
+ if(c.pending_event&&c.pending_event.class_id===cid)return '정지 응답 대기';
+ const ack=c.last_ack;
+ if(c.mega_mode==='STOPPED'){
+  if(c.stop_reason==='VISION'){
+   if(ack&&Number.isInteger(ack.class_id)&&ack.stop_seq===c.stop_seq)return ack.class_id===cid?stoppedLabel(c):'다른 동상 정지 중';
+   return '정지 상태 확인 중';
+  }
+  return '로봇 정지 중';
+ }
+ if((c.latched_classes||[]).includes(cid))return '이미 정지함 · 재인식 대기';
+ if(c.mega_mode==='WAIT_VISION'||c.mega_mode==='UNSEEN'||!c.mega_mode)return '제어 연결 대기';
+ if(c.target_sequence){
+  if(c.target_sequence[c.target_index]!==item.class_name)return '현재 순서의 대상 아님';
+  if(item.confidence<(s.stop_confidence_threshold||.55))return '신뢰도 기준 미달';
+  return item.stop_eligible?'정지 조건 확인 중':'중앙 위치 · 크기 조건 대기';
+ }
+ if(item.confidence<(s.stop_confidence_threshold||.55))return '신뢰도 기준 미달';
+ if(item.stop_eligible===false)return '중앙 진입 대기';
+ return item.stop_eligible===true?'정지 조건 확인 중':'현재 상태 확인 불가';
+}
+function renderDetections(s){
+ $('objects').replaceChildren();
+ for(const item of s.detections||[]){const chip=document.createElement('span');chip.className='object';chip.textContent=item.class_name+' · 신뢰도 '+(100*item.confidence).toFixed(1)+'% · '+detectionState(item,s);$('objects').append(chip);}
+ if(!(s.detections||[]).length){const empty=document.createElement('span');empty.className='sub';empty.textContent=s.ok?'현재 검출된 석상 없음':'인식 상태 미확인';$('objects').append(empty);}
+}
+function show(s){const c=s.control||{};
+ if(!paused){badge.textContent=s.ok?'AI 영상 연결됨':'영상 확인 필요';badge.className='badge '+(s.ok?'ok':'bad');stage.classList.toggle('stale',!s.ok);notice.hidden=s.ok;notice.textContent=s.error||'모델 또는 카메라를 준비하고 있습니다.';if(s.ok&&(!lastOkay||hadImageError)&&Date.now()-lastReconnect>3000)connect();}
+ $('model').textContent=s.model_ready?'모델 준비됨':'모델 준비 전';$('model').className='value '+(s.model_ready?'ok':'warn');
+ $('model-detail').textContent=(s.inference_fps||0).toFixed(1)+'회/초 추론 · 입력 반시계 '+(s.rotation_ccw||0)+'°';
+ lastMode=c.mega_mode==='STOPPED'?stoppedLabel(c):modes[c.mega_mode]||c.mega_mode||'응답 없음';$('mode').textContent=s.serial_ready?lastMode:'최근: '+lastMode+' · 현재 미확인';$('mode').className='value '+(!s.serial_ready?'warn':c.mega_mode==='FAULT'?'bad':c.mega_mode==='STOPPED'?'warn':'');
+ $('reason').textContent='사유: '+(reasons[c.stop_reason]||c.stop_reason||'확인 전')+' · 정지 번호 '+(c.stop_seq??'—');
+ const pending=c.pending_event,last=c.last_request,ack=c.last_ack;
+ $('command').textContent=pending?'요청 #'+pending.event+' 확인 대기':last?'최근 요청 #'+last.event:'요청 없음';
+ $('ack').textContent=ack?'정지 확인 기록 #'+ack.event+' · '+ack.class_name+' · 정지 번호 '+ack.stop_seq:'석상 요청에 따른 Mega 정지 확인 전';
+ $('serial').textContent=s.serial_ready?'Mega 응답 정상':c.serial_connected?'포트 연결 · 응답 대기':'Mega 연결 안 됨';$('serial').className='value '+(s.serial_ready?'ok':'warn');
+ $('heartbeat').textContent=c.heartbeat_allowed?'인식·통신 정상: 제어 신호 송신 중':'제어 신호 중지: 준비 상태 또는 오류 확인';
+ const sensorFresh=s.serial_ready&&s.sensor_age_seconds!=null&&s.sensor_age_seconds<.75;
+ $('sensors').textContent=s.white_count==null?'센서 응답 대기':(sensorFresh?'':'최근: ')+'흰색 '+s.white_count+'/8';
+ $('line-alignment').textContent=!sensorFresh?'현재 선 위치 미확인':s.normal_line?'중앙 센서에 선이 맞습니다.':'선 맞춤 필요 · 중앙 센서를 선 위에 놓아 주세요.';
+ $('line-alignment').className='sub '+(sensorFresh&&s.normal_line?'ok':'warn');
+ const err=c.fatal||s.model_error||(c.mega_mode==='FAULT'?'Mega FAULT 상태입니다. 원인을 해결한 뒤 Mega RESET과 프로그램 재시작이 필요할 수 있습니다.':'');
+ $('alert').hidden=!err;$('alert').textContent=err?'제어 확인 필요 · '+err:'';
+ lastDetections=s.detections||[];renderDetections(s);
+ const sequence=c.target_sequence;
+ $('repeat-guide').hidden=!!sequence;
+ $('sequence').hidden=!sequence;
+ if(sequence){
+  const current=c.target_index<sequence.length?'현재 '+(c.target_index+1)+'/'+sequence.length+' · '+sequence[c.target_index]:'순서 완료';
+  const slowing=c.approach_requested&&s.control_ready&&['FOLLOW','SEARCH'].includes(c.mega_mode);
+  $('sequence').textContent=current+(slowing?' · 접근 감속 요청':'')+' | '+sequence.join(' → ');
+  $('zone').textContent=sequence[c.target_index]==='TrojanHorse'
+    ? '말이 중앙에서 가장 크게 보이면 정지합니다. 화면 전체에서 말이 1초 이상 연속으로 검출되지 않으면 재출발합니다.'
+    : '현재 대상이 노란 구역 안에서 가장 크게 보이면 정지합니다. 대상이 사라지거나 더 큰 석상이 보이는 상태가 1초 이상 이어지면 재출발합니다.';
+ }else if(s.stop_zone){const timing=Number.isFinite(s.stop_min_frames)&&Number.isFinite(s.stop_min_span_seconds)?s.stop_min_frames+'프레임 · '+s.stop_min_span_seconds+'초 이상':'연속된 인식 결과로';$('zone').textContent='화면 전체에서 신뢰도 '+(100*s.stop_confidence_threshold).toFixed(0)+'% 이상으로 '+timing+' 미리 확인합니다. 확인된 석상 상자의 중심이 노란 구역 '+(100*s.stop_zone.left).toFixed(0)+'~'+(100*s.stop_zone.right).toFixed(0)+'%에 들어오면 정지를 요청합니다.';}
+ const age=s.capture_age_seconds==null?'—':s.capture_age_seconds.toFixed(1)+'초';$('details').textContent=(s.width?s.width+' × '+s.height+' · ':'')+(s.fps||0).toFixed(1)+' fps · 마지막 영상 '+age+' 전 · '+s.frame_sequence+' 프레임 · Tailscale';lastOkay=s.ok;
+}
+async function poll(){if(polling)return;polling=true;const aborter=new AbortController(),timeout=setTimeout(()=>aborter.abort(),2500);try{const r=await fetch('/status.json',{cache:'no-store',signal:aborter.signal});if(!r.ok)throw new Error('HTTP '+r.status);show(await r.json());networkFailures=0;firstNetworkFailure=null;}catch(e){networkFailures++;if(firstNetworkFailure===null)firstNetworkFailure=Date.now();if(networkFailures>=2||Date.now()-firstNetworkFailure>=4000){if(!paused){badge.textContent='연결 끊김';badge.className='badge bad';notice.hidden=false;notice.textContent='Jetson 연결 상태를 확인하고 있습니다.';stage.classList.add('stale');}lastOkay=false;$('serial').textContent='화면 연결 끊김 · 현재 상태 미확인';$('mode').textContent='최근: '+lastMode+' · 현재 미확인';$('mode').className='value warn';$('heartbeat').textContent='현재 제어 신호 송신 여부 미확인';$('line-alignment').textContent='현재 선 위치 미확인';$('line-alignment').className='sub warn';renderDetections({detections:lastDetections});}}finally{clearTimeout(timeout);polling=false;}}
+poll();setInterval(poll,1000);
+</script></body></html>

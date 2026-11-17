@@ -37,14 +37,6 @@
   주행 중 센서 8개가 모두 흰색이면 시간 제한 없이 직진한다.
   주행 중에는 10ms 간격으로 측정한다.
   아래 PWM, PD 상수, 탐색시간은 실측 최적값이 아닌 시작값이다.
-
-  [시계 반대 방향 트랙] CCW_TRACK = true (코너는 전부 왼쪽):
-  - 오른쪽으로 크게 꺾으라는 값은 RIGHT_CONFIRM_MS 동안 계속될 때만 따른다.
-    확인하는 동안은 직선 보정 정도(RIGHT_DOUBT_ERROR)까지만 오른쪽으로 꺾는다.
-  - 확인 중인 오른쪽은 '마지막 선 방향'으로 기억하지 않는다. 방향을 모르면 왼쪽으로 찾는다.
-  - 흰 센서 묶음이 여러 개면 직전 선 위치에 가장 가까운 묶음(비슷하면 왼쪽)만 쓴다.
-    BLOB_ALWAYS_LEFT = true면 항상 가장 왼쪽 묶음을 쓴다.
-  - CCW_TRACK = false면 원래 코드와 똑같이 동작한다.
 */
 
 #include <Arduino.h>
@@ -124,23 +116,6 @@ const uint32_t NOMINAL_PIVOT_90_MS =
 const uint32_t SEARCH_TIMEOUT_MS =
     SEARCH_ARC_MS + 2 * NOMINAL_PIVOT_90_MS + SEARCH_RAMP_MARGIN_MS;
 const uint32_t REACQUIRE_MS = 15;
-
-// ---------- 시계 반대 방향 트랙 (코너는 전부 왼쪽) ----------
-// false로 하면 아래 기능을 모두 끄고 원래 코드와 똑같이 동작한다.
-const bool CCW_TRACK = true;
-// 편차가 이보다 오른쪽이면 의심한다. 편차 범위 -7(왼쪽) ~ +7(오른쪽), 2 = A2와 A3 사이.
-// 직선에서 자꾸 오른쪽 보정이 늦으면 올리고, 그래도 오른쪽으로 홱 꺾이면 내린다.
-const float RIGHT_DOUBT_ERROR = 2.0f;
-// 의심하는 값이 이 시간 동안 계속돼야 진짜 오른쪽으로 보고 꺾는다 [ms].
-// 너무 길면 직선에서 왼쪽으로 밀렸을 때 선을 놓칠 수 있다.
-const uint32_t RIGHT_CONFIRM_MS = 80;
-// 흰 센서가 떨어진 묶음 여러 개로 보일 때 어느 묶음을 따라갈지:
-//  false = 직전 선 위치에 가장 가까운 묶음. 거리 차이가 BLOB_TIE_MARGIN 이하면 왼쪽 묶음.
-//          가로선에 비스듬히 들어가거나 옆에 반사가 생겨도 원래 선을 계속 따라간다.
-//  true  = 항상 가장 왼쪽 묶음. 갈림길에서 반드시 왼쪽 길로 가야 하는 트랙이면 켠다.
-//          대신 가로선에 왼쪽부터 비스듬히 들어가면 잠깐 왼쪽으로 꺾일 수 있다.
-const bool BLOB_ALWAYS_LEFT = false;
-const float BLOB_TIE_MARGIN = 1.0f;
 // ======================================================
 
 // Jetson telemetry uses these numeric IDs; 2 belonged to the old white-bar mode.
@@ -159,8 +134,6 @@ float leftCommand = 0.0f, rightCommand = 0.0f;
 uint32_t stateSince = 0, lastControl = 0;
 uint32_t stableSince = 0;
 bool stableActive = false;
-uint32_t rightSince = 0;            // 오른쪽 의심 값이 처음 나온 시각
-bool rightTiming = false;
 uint32_t lastSensorPrint = 0;
 
 const uint32_t STATE_PRINT_MS = 100;
@@ -356,7 +329,6 @@ float limitFloat(float x, float lo, float hi) {
 void resetPD() {
   pdReady = false;
   filteredDerivative = 0.0f;
-  rightTiming = false;   // 상태가 바뀌거나 전부 흰색으로 직진한 뒤에는 오른쪽 확인도 처음부터
 }
 
 void readSensors() {
@@ -367,31 +339,10 @@ void readSensors() {
     white[i] = sensorValues[i] <= THRESHOLD;
     if (white[i]) {
       ++whiteCount;
-      sum += SENSOR_WEIGHTS[i];   // A0:+7, A1:+5, ... A7:-7
+      sum += SENSOR_WEIGHTS[i];   // A0:+4, A1:+3, ... A7:-4
     }
   }
-  if (whiteCount == 0) return;    // 선 없음: 직전 편차 유지
-  if (!CCW_TRACK) { error = (float)sum / whiteCount; return; }
-
-  // 흰 센서가 떨어진 묶음 여러 개(갈림길, 비스듬히 들어간 가로선, 반사 등)면 한 묶음만 쓴다.
-  // 왼쪽 묶음부터 보면서, 직전 선 위치(error)에 BLOB_TIE_MARGIN보다 확실히 더 가까울 때만
-  // 오른쪽 묶음으로 바꾼다 → 비슷하면 왼쪽. BLOB_ALWAYS_LEFT면 바꾸지 않는다(항상 맨 왼쪽).
-  // 묶음이 하나면 원래 계산(흰 센서 전체 평균)과 같다.
-  float best = 0.0f, bestDist = 0.0f;
-  bool found = false;
-  uint8_t n = 0;
-  sum = 0;
-  for (int8_t i = 7; i >= -1; --i) {   // A7(왼쪽) → A0(오른쪽). -1은 마지막 묶음 마감용
-    if (i >= 0 && white[i]) { sum += SENSOR_WEIGHTS[i]; ++n; continue; }
-    if (n == 0) continue;
-    const float center = (float)sum / n;
-    const float dist = fabsf(center - error);
-    if (!found || (!BLOB_ALWAYS_LEFT && dist < bestDist - BLOB_TIE_MARGIN)) {
-      best = center; bestDist = dist; found = true;
-    }
-    sum = 0; n = 0;
-  }
-  error = best;
+  if (whiteCount > 0) error = (float)sum / whiteCount;
 }
 
 void printSensors(uint32_t now) {
@@ -460,34 +411,18 @@ void drive(float left, float right, float dt) {
   writeMotor(ENB, IN3, IN4, (int)roundf(rightCommand), RIGHT_REVERSED);
 }
 
-// 시계 반대 방향 트랙: 오른쪽으로 크게(RIGHT_DOUBT_ERROR 초과) 꺾으라는 값은
-// RIGHT_CONFIRM_MS 동안 계속될 때만 믿는다. 확인하는 동안은 RIGHT_DOUBT_ERROR까지만 꺾는다
-// (직선 보정 정도. 진짜 오른쪽이어도 그동안 조금씩은 돌아오게).
-// 반환값 = 조향에 쓸 편차, doubting = 아직 확인 중.
-float rightChecked(float e, uint32_t now, bool &doubting) {
-  doubting = false;
-  if (!CCW_TRACK || e <= RIGHT_DOUBT_ERROR) { rightTiming = false; return e; }
-  if (!rightTiming) { rightTiming = true; rightSince = now; }
-  if ((uint32_t)(now - rightSince) >= RIGHT_CONFIRM_MS) return e;   // 계속 오른쪽 → 진짜
-  doubting = true;
-  return RIGHT_DOUBT_ERROR;
-}
-
-void followLine(float dt, uint32_t now) {
-  bool doubting;
-  const float e = rightChecked(error, now, doubting);
-  float derivative = pdReady ? (e - previousError) / dt : 0.0f;
+void followLine(float dt) {
+  float derivative = pdReady ? (error - previousError) / dt : 0.0f;
   float alpha = dt / (DERIVATIVE_TAU_S + dt);
   filteredDerivative += alpha * (derivative - filteredDerivative);
-  previousError = e;
+  previousError = error;
   pdReady = true;
 
-  // 확인 중인 오른쪽은 마지막 선 방향으로 기억하지 않는다 (잠깐 튄 값 때문에 오른쪽으로 찾으러 가지 않게)
-  if (e > 0.7f) { if (!doubting) lastDirection = 1; }
-  else if (e < -0.7f) lastDirection = -1;
+  if (error > 0.7f) lastDirection = 1;
+  else if (error < -0.7f) lastDirection = -1;
 
-  float turn = KP * e + KD * filteredDerivative;
-  float severity = limitFloat(fabsf(e) / CORNER_ERROR_SCALE, 0.0f, 1.0f);
+  float turn = KP * error + KD * filteredDerivative;
+  float severity = limitFloat(fabsf(error) / CORNER_ERROR_SCALE, 0.0f, 1.0f);
   float base = STRAIGHT_PWM - (STRAIGHT_PWM - CURVE_PWM) * severity;
   turn = limitFloat(turn, -base, base); // 일반 추종에서는 안쪽 바퀴 역회전 금지
 
@@ -535,7 +470,7 @@ void searchLine(uint32_t now, float dt) {
   bool centered = (white[3] || white[4]) && !white[0] && !white[7];
   if (heldFor(centered, now, REACQUIRE_MS)) {
     changeMode(FOLLOW, now);
-    followLine(dt, now);
+    followLine(dt);
     return;
   }
 
@@ -544,9 +479,7 @@ void searchLine(uint32_t now, float dt) {
     failStop();
     return;
   }
-  // 시계 반대 방향 트랙: 마지막 선 방향을 모르면 왼쪽으로 찾는다 (코너는 전부 왼쪽)
-  const int8_t direction = (lastDirection == 0 && CCW_TRACK) ? -1 : lastDirection;
-  if (direction == 0) {
+  if (lastDirection == 0) {
     // 방향을 모르면 짧은 틈만 저속 직진으로 확인한다.
     if (elapsed >= UNKNOWN_SEARCH_MS) failStop();
     else drive(CURVE_PWM, CURVE_PWM, dt);
@@ -556,7 +489,7 @@ void searchLine(uint32_t now, float dt) {
   bool onArc = elapsed < SEARCH_ARC_MS;
   int outer = onArc ? SEARCH_OUTER_PWM : PIVOT_PWM;
   int inner = onArc ? SEARCH_INNER_PWM : -PIVOT_PWM;
-  if (direction > 0) drive(outer, inner, dt);
+  if (lastDirection > 0) drive(outer, inner, dt);
   else drive(inner, outer, dt);
 }
 
@@ -621,5 +554,5 @@ void loop() {
 
   if (mode == FOLLOW && whiteCount == 0) changeMode(SEARCH, now);
   if (mode == SEARCH) searchLine(now, dt);
-  else followLine(dt, now);
+  else followLine(dt);
 }

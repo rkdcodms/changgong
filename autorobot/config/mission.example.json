@@ -1,0 +1,14 @@
+{
+  "departure_policy": "events",
+  "min_dwell_s": 1.0,
+  "timed_base_s": 8.0,
+  "timed_per_crew_s": 6.0,
+  "after_last_trial": "hold",
+  "continue_seconds": 0.0,
+  "game_seconds": 300.0,
+  "seek_warn_s": 45.0,
+  "max_event_age_s": 5.0,
+  "link_stale_s": 1.0,
+  "start_index": 0,
+  "allowed_sources": ["operator", "sensor"]
+}

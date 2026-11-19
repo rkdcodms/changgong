@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "prepared_date": "2026-11-12",
+  "source_release": "r_0e812b4c8e11",
+  "source_patches": {
+    "center_confirmation": "center100_a469b6ed34f1",
+    "preview_v3": "ui3_7ef151135cc3"
+  },
+  "original_verified_release_sha256": {
+    "jetson/vision_control.py": "95dc837504e29fb7f66d50bb3254cd445c7cd08d8fec19e83eb1879c71c976d1",
+    "jetson/vision_stop_server.py": "817c2dc5221e74fc417a2671ee3bc0ebf8a5f862b725163d7a439967f4876b4d",
+    "jetson/preview.html": "1d35cdc49fccd6b5c579220b5195cb820b0a62fe5ecfb44d63604c17b3ae8be2",
+    "jetson/web_preview.py": "046de5c4995fcabde3fbdcc50aee7d2396e32883b4d0ee8d9bdcd3ac556a2eb4",
+    "arduino/vision_stop/vision_stop.ino": "b3b0ad12cc54cbd8827c1378ea273af7bffabccbb577255e382543098ef22049",
+    "firmware/vision_stop.ino.hex": "e3e292a47f94c802cf5bc879f89cf2e0ad07c29e76e87fbe00370e12f222216b"
+  },
+  "packaged_sha256": {
+    "jetson/vision_control.py": "95dc837504e29fb7f66d50bb3254cd445c7cd08d8fec19e83eb1879c71c976d1",
+    "jetson/vision_stop_server.py": "254a2f651a62da8639dbf588863da53c876ea9857cc2e52f4480a246477cb606",
+    "jetson/preview.html": "1d35cdc49fccd6b5c579220b5195cb820b0a62fe5ecfb44d63604c17b3ae8be2",
+    "jetson/web_preview.py": "2c197a2b6ffed2e92f1c3a26678ddcd88b1953de94dd03f605adde90d6915bd0",
+    "arduino/vision_stop/vision_stop.ino": "b3b0ad12cc54cbd8827c1378ea273af7bffabccbb577255e382543098ef22049",
+    "firmware/vision_stop.ino.hex": "e3e292a47f94c802cf5bc879f89cf2e0ad07c29e76e87fbe00370e12f222216b"
+  },
+  "packaging_changes": [
+    "Viewer access: explicit Tailscale IPv4 peer network flag, optional repeated explicit viewer addresses; no public wildcard bind.",
+    "Model default is package-relative models/best.pt; Mega serial device is a required CLI argument.",
+    "Python, UI and firmware harness paths are portable; UI fixture is synthetic.",
+    "No recognition controller, UI v3, Mega source or compiled firmware changes."
+  ],
+  "preserved_behavior": {
+    "stop_zone_left": 0.4,
+    "stop_zone_right": 0.6,
+    "confidence": 0.55,
+    "runtime_min_span_seconds": 0.1,
+    "min_frames": 3,
+    "stop_seconds": 5,
+    "max_seconds": 0,
+    "viewer_stream_slots": 4,
+    "web_read_only": true
+  },
+  "model": {
+    "repository": "rkdcodms/changgong",
+    "source_branch": "add-yolo-best-pt",
+    "commit": "9f9d66dfd971276d2fbb0ab79bd2d233a6898df9",
+    "path": "best.pt",
+    "size_bytes": 5507098,
+    "sha256": "e67df5f04399513f8578a6948843902ea31b346c558375af88e919834283bd84",
+    "included_in_package": false
+  },
+  "previously_verified_jetson_environment": {
+    "hardware": "Jetson Orin Nano Super",
+    "torch": "2.10.0",
+    "torch_cuda_build": "12.6",
+    "ultralytics": "8.4.144",
+    "opencv_version": null,
+    "numpy_version": null,
+    "pyserial_version": null,
+    "note": "Historical working environment, not a fresh installation lock or a current hardware probe."
+  },
+  "checks": {
+    "python_control_and_access_tests": 60,
+    "python_control_and_access_result": "PASS",
+    "ui_assertions": 42,
+    "ui_result": "PASS",
+    "historical_firmware_assertions": 4594,
+    "historical_firmware_result": "PASS",
+    "firmware_harness_rerun": false,
+    "hardware_accessed": false,
+    "deployed_to_robot": false,
+    "python_launcher_download_tests": 24,
+    "python_all_tests": 84,
+    "python_all_result": "PASS",
+    "model_download_sha256_verified": true
+  }
+}
